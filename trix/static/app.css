@@ -32,3 +32,5 @@ body{padding-top:68px}body>header{position:fixed;z-index:100;inset:0 0 auto 0;ba
 .agent-dialog[open]{inset:16px 0;height:auto;max-height:none;margin:auto}
 
 @media(prefers-reduced-transparency:reduce){header{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}}
+
+#agent-graph{cursor:grab;touch-action:none;user-select:none}#agent-graph.dragging{cursor:grabbing}

@@ -11,6 +11,10 @@ let state = {
   reconnect: null,
 };
 let graphScale = 1;
+let graphPanX = 0;
+let graphPanY = 0;
+let graphDrag = null;
+let graphSuppressClick = false;
 let renderFrame = null;
 
 const esc = (value) =>
@@ -351,9 +355,17 @@ function renderGraph() {
   const centerX = width / 2;
   const centerY = height / 2;
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-  svg.innerHTML = `<g class="graph-world" transform="translate(${centerX} ${centerY}) scale(${graphScale}) translate(${-centerX} ${-centerY})">${links}${nodes}</g>`;
+  svg.dataset.graphCenterX = centerX;
+  svg.dataset.graphCenterY = centerY;
+  svg.innerHTML = `<g class="graph-world" transform="translate(${graphPanX} ${graphPanY}) translate(${centerX} ${centerY}) scale(${graphScale}) translate(${-centerX} ${-centerY})">${links}${nodes}</g>`;
   svg.querySelectorAll("[data-graph-agent]").forEach((element) => {
-    const choose = () => openAgentModal(element.dataset.graphAgent);
+    const choose = (event) => {
+      if (event && graphSuppressClick) {
+        event.preventDefault();
+        return;
+      }
+      openAgentModal(element.dataset.graphAgent);
+    };
     element.addEventListener("click", choose);
     element.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") {
@@ -362,6 +374,18 @@ function renderGraph() {
       }
     });
   });
+}
+
+function updateGraphTransform() {
+  const svg = $("#agent-graph");
+  const world = svg.querySelector(".graph-world");
+  if (!world) return;
+  const centerX = Number(svg.dataset.graphCenterX);
+  const centerY = Number(svg.dataset.graphCenterY);
+  world.setAttribute(
+    "transform",
+    `translate(${graphPanX} ${graphPanY}) translate(${centerX} ${centerY}) scale(${graphScale}) translate(${-centerX} ${-centerY})`,
+  );
 }
 
 async function load(id) {
@@ -483,6 +507,47 @@ $("#agent-dialog").addEventListener("close", () => {
   state.modalAgent = null;
 });
 
+const graphSvg = $("#agent-graph");
+graphSvg.addEventListener("pointerdown", (event) => {
+  if (event.button < 0 || event.button > 2) return;
+  const rect = graphSvg.getBoundingClientRect();
+  const viewBox = graphSvg.viewBox.baseVal;
+  graphDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    panX: graphPanX,
+    panY: graphPanY,
+    scaleX: viewBox.width / rect.width,
+    scaleY: viewBox.height / rect.height,
+    moved: false,
+  };
+  graphSvg.setPointerCapture(event.pointerId);
+  graphSvg.classList.add("dragging");
+});
+graphSvg.addEventListener("pointermove", (event) => {
+  if (!graphDrag || graphDrag.pointerId !== event.pointerId) return;
+  const dx = event.clientX - graphDrag.startX;
+  const dy = event.clientY - graphDrag.startY;
+  if (Math.hypot(dx, dy) >= 4) graphDrag.moved = true;
+  graphPanX = graphDrag.panX + dx * graphDrag.scaleX;
+  graphPanY = graphDrag.panY + dy * graphDrag.scaleY;
+  updateGraphTransform();
+});
+const endGraphDrag = (event) => {
+  if (!graphDrag || graphDrag.pointerId !== event.pointerId) return;
+  graphSuppressClick = graphDrag.moved;
+  graphDrag = null;
+  graphSvg.classList.remove("dragging");
+  if (graphSvg.hasPointerCapture(event.pointerId)) graphSvg.releasePointerCapture(event.pointerId);
+  setTimeout(() => { graphSuppressClick = false; }, 0);
+};
+graphSvg.addEventListener("pointerup", endGraphDrag);
+graphSvg.addEventListener("pointercancel", endGraphDrag);
+graphSvg.addEventListener("contextmenu", (event) => {
+  if (graphSuppressClick) event.preventDefault();
+});
+
 $("#graph-zoom-in").onclick = () => {
   graphScale = Math.min(1.35, graphScale + 0.1);
   renderGraph();
@@ -493,6 +558,8 @@ $("#graph-zoom-out").onclick = () => {
 };
 $("#graph-fit").onclick = () => {
   graphScale = 1;
+  graphPanX = 0;
+  graphPanY = 0;
   renderGraph();
 };
 
