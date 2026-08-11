@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { AgentTranscript } from "./AgentTranscript";
 import { ScanPromptComposer } from "./ScanPromptComposer";
@@ -103,64 +104,79 @@ export function AgentDetailModal({
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+
+    // Lock the page behind the portalled modal. Compensating for the removed
+    // scrollbar keeps the sticky sidebar/header and main content from shifting.
+    const previousOverflow = document.documentElement.style.overflow;
+    const previousPaddingRight = document.body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.documentElement.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      const currentPadding = Number.parseFloat(window.getComputedStyle(document.body).paddingRight) || 0;
+      document.body.style.paddingRight = `${currentPadding + scrollbarWidth}px`;
+    }
+
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prevOverflow;
+      document.documentElement.style.overflow = previousOverflow;
+      document.body.style.paddingRight = previousPaddingRight;
     };
   }, [render, onClose]);
 
   if (!render || !shownAgent) return null;
 
-  return (
+  return createPortal(
     <div
       data-state={state}
-      className="agent-modal fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 sm:p-8"
+      className="agent-modal fixed inset-0 z-50 flex h-dvh items-center justify-center overflow-hidden overscroll-none bg-black/80 p-4 sm:p-8"
       onClick={onClose}
       role="dialog"
       aria-modal="true"
       aria-label={`Agent ${shownAgent.name}`}
     >
       <div
-        className="relative flex h-[60vh] w-[calc(100vw-4rem)] max-w-6xl flex-col overflow-hidden rounded-xl border border-[#222] bg-[#0a0a0a] shadow-2xl"
+        className="h-full max-h-[calc(100dvh-2rem)] min-h-0 w-full max-w-6xl sm:max-h-[calc(100dvh-4rem)]"
+        style={{ contain: "layout paint" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-3 border-b border-[#222] px-5 py-3.5">
-          <div className="flex min-w-0 items-center gap-2">
-            <span
-              className={`h-2 w-2 flex-shrink-0 rounded-full ${STATUS_DOT[shownAgent.status] ?? "bg-[#888]"}`}
-            />
-            <span className="truncate text-sm font-semibold text-white">{shownAgent.name}</span>
-            <span className="flex-shrink-0 font-mono text-xs text-[#555]">{shownAgent.id}</span>
+        <div className="relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden rounded-xl border border-[#222] bg-[#0a0a0a] shadow-2xl">
+          <div className="flex w-full flex-none items-center justify-between gap-3 border-b border-[#222] bg-[#0a0a0a] px-5 py-3.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className={`h-2 w-2 flex-shrink-0 rounded-full ${STATUS_DOT[shownAgent.status] ?? "bg-[#888]"}`}
+              />
+              <span className="truncate text-sm font-semibold text-white">{shownAgent.name}</span>
+              <span className="flex-shrink-0 font-mono text-xs text-[#555]">{shownAgent.id}</span>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="flex-shrink-0 rounded-md p-1 text-[#888] transition-colors hover:bg-[#1a1a1a] hover:text-white"
+            >
+              <X className="h-4 w-4" />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="flex-shrink-0 rounded-md p-1 text-[#888] transition-colors hover:bg-[#1a1a1a] hover:text-white"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
 
-        <div ref={scrollRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-5">
-          {contentReady && (
-            <AgentTranscript agent={shownAgent} events={events} showHeader={false} />
+          <div ref={scrollRef} onScroll={handleScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-5">
+            {contentReady && (
+              <AgentTranscript agent={shownAgent} events={events} showHeader={false} />
+            )}
+          </div>
+
+          {steerable && (
+            <div className="flex-none border-t border-[#222] px-5 py-3">
+              <ScanPromptComposer
+                agents={[shownAgent]}
+                fixedAgentId={shownAgent.id}
+                className="mt-0"
+              />
+            </div>
           )}
         </div>
-
-        {steerable && (
-          <div className="border-t border-[#222] px-5 py-3">
-            <ScanPromptComposer
-              agents={[shownAgent]}
-              fixedAgentId={shownAgent.id}
-              className="mt-0"
-            />
-          </div>
-        )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

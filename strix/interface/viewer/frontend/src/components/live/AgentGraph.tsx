@@ -25,8 +25,7 @@ const NODE_HEIGHT = 80;
 const nodeTypes = { agentNode: AgentNodeComponent };
 
 function getLayoutedElements(
-  agents: Map<string, AgentNode>,
-  selectedAgentId: string | null
+  agents: Map<string, AgentNode>
 ) {
   const g = new dagre.graphlib.Graph();
   g.setDefaultEdgeLabel(() => ({}));
@@ -41,7 +40,7 @@ function getLayoutedElements(
       id,
       type: "agentNode",
       position: { x: 0, y: 0 },
-      data: { ...agent, isSelected: id === selectedAgentId },
+      data: agent,
     });
 
     if (agent.parentId && agents.has(agent.parentId)) {
@@ -118,7 +117,6 @@ function SmoothControls() {
 
 interface AgentGraphProps {
   agents: Map<string, AgentNode>;
-  selectedAgentId: string | null;
   onSelectAgent: (id: string | null) => void;
   eventsLoaded?: boolean;
   eventsEmpty?: boolean;
@@ -127,7 +125,6 @@ interface AgentGraphProps {
 
 export default function AgentGraph({
   agents,
-  selectedAgentId,
   onSelectAgent,
   eventsLoaded,
   eventsEmpty,
@@ -138,7 +135,7 @@ export default function AgentGraph({
 
   useEffect(() => {
     if (agents.size === 0) return;
-    const { nodes: ln, edges: le } = getLayoutedElements(agents, selectedAgentId);
+    const { nodes: ln, edges: le } = getLayoutedElements(agents);
     setNodes(ln);
     setEdges(le);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -151,10 +148,10 @@ export default function AgentGraph({
       nds.map((n) => {
         const agent = agents.get(n.id);
         if (!agent) return n;
-        return { ...n, data: { ...agent, isSelected: n.id === selectedAgentId } };
+        return { ...n, data: agent };
       })
     );
-  }, [agents, selectedAgentId, setNodes]);
+  }, [agents, setNodes]);
 
   const nodeClickedRef = useRef(false);
 
@@ -224,6 +221,7 @@ export default function AgentGraph({
       onPaneClick={onPaneClick}
       nodeTypes={nodeTypes}
       nodesConnectable={false}
+      nodesSelectable={false}
       edgesFocusable={false}
       edgesReconnectable={false}
       minZoom={0.15}

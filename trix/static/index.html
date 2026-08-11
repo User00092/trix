@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Trix · Codex orchestration</title><link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header><a class="brand" href="/"><span class="mark">T</span><span>TRIX</span></a><div id="status" class="pill idle">● Idle</div></header>
+  <main>
+    <aside>
+      <div class="section-title"><span>Agent hierarchy</span><span id="agent-count">0</span></div>
+      <div id="tree" class="tree empty">Create a session to assemble your team.</div>
+      <div class="stats" id="stats"></div>
+    </aside>
+    <section class="workspace">
+      <div class="hero">
+        <div><p class="eyebrow">Development orchestration</p><h1 id="title">Build with a visible agent team.</h1><p id="subtitle">Codex does the engineering. Trix makes ownership, progress, and verification explicit.</p></div>
+        <button id="new-session" class="secondary">New session</button>
+      </div>
+      <div class="grid">
+        <article class="panel detail"><div class="section-title">Selected agent</div><div id="detail" class="empty">Select an agent to inspect its task and evidence.</div></article>
+        <article class="panel activity"><div class="section-title"><span>Live activity</span><span class="live-dot"></span></div><div id="events" class="event-list empty">Activity will stream here in real time.</div></article>
+      </div>
+      <form id="instruction" class="instruction hidden"><input id="instruction-text" placeholder="Send an instruction to the selected agent…"><button>Send</button></form>
+      <article class="agent-graph-panel">
+        <div class="graph-header">
+          <div>
+            <div class="graph-title"><span class="graph-icon">⌘</span> Agent graph <span id="graph-count">0 agents</span></div>
+            <p>Follow ownership, status, and verification through the team.</p>
+          </div>
+          <div class="graph-legend" aria-label="Agent status legend">
+            <span><i class="legend-dot working"></i>Working</span>
+            <span><i class="legend-dot waiting"></i>Waiting</span>
+            <span><i class="legend-dot completed"></i>Complete</span>
+            <span><i class="legend-dot failed"></i>Failed</span>
+          </div>
+        </div>
+        <div id="graph-canvas" class="graph-canvas">
+          <div id="graph-empty" class="graph-empty">The agent graph will appear when a session begins.</div>
+          <svg id="agent-graph" role="tree" aria-label="Trix agent hierarchy"></svg>
+          <div class="graph-controls" aria-label="Graph zoom controls">
+            <button id="graph-zoom-in" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+            <button id="graph-zoom-out" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+            <button id="graph-fit" type="button" title="Fit graph" aria-label="Fit graph">↙</button>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+  <dialog id="agent-dialog" class="agent-dialog">
+    <div id="agent-modal-content"></div>
+    <form id="modal-instruction" class="modal-instruction">
+      <span class="guide-icon">✣</span>
+      <input id="modal-instruction-text" aria-label="Guide the selected agent" placeholder="Guide the agent…">
+      <button type="submit">Send</button>
+    </form>
+  </dialog>
+  <dialog id="create-dialog"><form id="create-form" method="dialog"><div class="dialog-head"><div><p class="eyebrow">New orchestration</p><h2>Give the Manager a goal</h2></div><button value="cancel" class="icon">×</button></div><label>Session title<input name="title" required maxlength="160" placeholder="Ship account authentication"></label><label>Repository path<input name="repository_path" required placeholder="/absolute/path/to/repository"></label><label>Development task<textarea name="prompt" required rows="7" placeholder="Describe the outcome, constraints, and verification expectations…"></textarea></label><div class="actions"><button value="cancel" class="secondary">Cancel</button><button value="default">Create session</button></div></form></dialog>
+  <script src="/assets/app.js"></script>
+</body></html>

@@ -750,7 +750,6 @@ function AgentsTab({ run, canSteer }: { run: LoadedRun; canSteer: boolean }) {
         <div className="h-[480px] rounded-lg border border-[#1a1a1a] overflow-hidden">
           <AgentGraph
             agents={graphAgents}
-            selectedAgentId={selectedId}
             onSelectAgent={(id) => setSelectedId(id)}
             eventsLoaded
             eventsEmpty={graphAgents.size === 0}

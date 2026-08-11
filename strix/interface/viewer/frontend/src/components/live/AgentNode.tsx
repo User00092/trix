@@ -11,16 +11,12 @@ const STATUS_STYLES: Record<string, string> = {
   error: "bg-red-500",
 };
 
-function AgentNodeComponent({ data, selected }: NodeProps) {
-  const agent = data as unknown as AgentNodeData & { isSelected: boolean };
+function AgentNodeComponent({ data }: NodeProps) {
+  const agent = data as unknown as AgentNodeData;
 
   return (
     <div
-      className={`w-[260px] rounded-lg border px-4 py-3 transition-colors ${
-        agent.isSelected || selected
-          ? "border-white/30 bg-[#0a0a0a]"
-          : "border-[#222] bg-black hover:border-[#333]"
-      }`}
+      className="w-[260px] rounded-lg border border-[#222] bg-black px-4 py-3 transition-colors hover:border-[#333]"
     >
       <Handle type="target" position={Position.Top} isConnectable={false} className={`!w-1.5 !h-1.5 !border-0 ${agent.parentId ? "!bg-[#444]" : "!bg-transparent"}`} />
 

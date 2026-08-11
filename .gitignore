@@ -98,3 +98,5 @@ schema.graphql
 /.benchmarks/
 /references/
 /strix_runs_main/
+# Trix local runtime state
+.trix/
