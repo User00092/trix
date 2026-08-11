@@ -4,6 +4,7 @@ let state = {
   agents: [],
   events: [],
   selected: null,
+  modalAgent: null,
   socket: null,
   socketSession: null,
   heartbeat: null,
@@ -86,8 +87,7 @@ function selectAgent(agentId) {
 }
 
 function openAgentModal(agentId) {
-  state.selected = agentId;
-  render();
+  state.modalAgent = agentId;
   renderAgentModal();
   const dialog = $("#agent-dialog");
   if (!dialog.open) dialog.showModal();
@@ -213,7 +213,7 @@ function timelineKind(eventType) {
 }
 
 function renderAgentModal() {
-  const agent = state.agents.find((item) => item.id === state.selected);
+  const agent = state.agents.find((item) => item.id === state.modalAgent);
   const content = $("#agent-modal-content");
   if (!agent) {
     content.innerHTML = "";
@@ -443,9 +443,9 @@ $("#instruction").onsubmit = async (event) => {
   event.preventDefault();
   const input = $("#instruction-text");
   const message = input.value.trim();
-  if (!message || !state.selected) return;
+  if (!message || !state.modalAgent) return;
   try {
-    const agent = await api(`/api/agents/${state.selected}/instructions`, {
+    const agent = await api(`/api/agents/${state.modalAgent}/instructions`, {
       method: "POST",
       body: JSON.stringify({ message }),
     });
@@ -477,6 +477,10 @@ $("#modal-instruction").onsubmit = async (event) => {
 
 $("#agent-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) event.currentTarget.close();
+});
+
+$("#agent-dialog").addEventListener("close", () => {
+  state.modalAgent = null;
 });
 
 $("#graph-zoom-in").onclick = () => {
