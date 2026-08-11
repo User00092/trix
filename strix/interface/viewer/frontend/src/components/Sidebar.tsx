@@ -5,6 +5,8 @@ import {
   Users,
   History,
   Mail,
+  Menu,
+  X,
   LogOut,
   ChevronsUpDown,
 } from "lucide-react";
@@ -82,8 +84,52 @@ export default function Sidebar({
   });
   const [isResizing, setIsResizing] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [upgradeFeature, setUpgradeFeature] = useState<string | null>(null);
   const userMenuRef = useRef<HTMLDivElement>(null);
+  const mobileMenuRef = useRef<HTMLDivElement>(null);
+  const mobileTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const selectMobileView = (nextView: View) => {
+    setMobileOpen(false);
+    onSelectView(nextView);
+  };
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    mobileMenuRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobileOpen(false);
+      if (event.key === "Tab" && mobileMenuRef.current) {
+        const focusable = Array.from(
+          mobileMenuRef.current.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'
+          )
+        );
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) return;
+        if (
+          event.shiftKey &&
+          (document.activeElement === first || !mobileMenuRef.current.contains(document.activeElement))
+        ) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+      mobileTriggerRef.current?.focus();
+    };
+  }, [mobileOpen]);
 
   // Open the upgrade dialog for a platform feature, recording which feature
   // drove the open (the dialog's own CTAs track the deeper conversion).
@@ -166,6 +212,60 @@ export default function Sidebar({
 
   return (
     <>
+      <button
+        ref={mobileTriggerRef}
+        type="button"
+        className="fixed left-3 top-4 z-40 grid h-10 w-10 place-items-center rounded-lg border border-white/10 bg-black text-[#aaa] transition-colors hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40 lg:hidden"
+        aria-label="Open navigation menu"
+        aria-controls="mobile-navigation"
+        aria-expanded={mobileOpen}
+        onClick={() => setMobileOpen(true)}
+      >
+        <Menu className="h-5 w-5" aria-hidden="true" />
+      </button>
+
+      {mobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden" role="presentation">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            aria-label="Close navigation menu"
+            onClick={() => setMobileOpen(false)}
+          />
+          <div
+            id="mobile-navigation"
+            ref={mobileMenuRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation menu"
+            tabIndex={-1}
+            className="relative flex h-dvh w-[min(88vw,320px)] flex-col overflow-hidden border-r border-white/10 bg-black shadow-2xl outline-none"
+          >
+            <div className="flex h-[73px] flex-none items-center justify-between border-b border-white/10 px-4">
+              <span className="text-sm font-semibold text-white">Navigation</span>
+              <button
+                type="button"
+                className="grid h-10 w-10 place-items-center rounded-lg text-[#888] hover:bg-white/[0.06] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40"
+                aria-label="Close navigation menu"
+                onClick={() => setMobileOpen(false)}
+              >
+                <X className="h-5 w-5" aria-hidden="true" />
+              </button>
+            </div>
+            <nav className="scrollbar-thin flex-1 overflow-y-auto px-2 py-3" aria-label="Primary navigation">
+              <div className="flex flex-col gap-px">
+                <NavItem mobile icon={<ProjectsIcon />} label="Pentest Overview" active={view === "overview"} onClick={() => selectMobileView("overview")} />
+                <NavItem mobile icon={<AlertTriangle className="h-4 w-4" />} label="Issues" count={issuesCount || undefined} active={view === "issues"} onClick={() => selectMobileView("issues")} />
+                {agentCount > 0 && <NavItem mobile icon={<Bot className="h-4 w-4" />} label="Agents" count={agentCount} active={view === "agents"} onClick={() => selectMobileView("agents")} />}
+                <NavItem mobile icon={<History className="h-4 w-4" />} label="Past runs" count={runCount || undefined} active={view === "history"} onClick={() => { setMobileOpen(false); onOpenHistory(); }} />
+                {finished && <NavItem mobile icon={<Mail className="h-4 w-4" />} label="Export report" active={view === "email"} onClick={() => { setMobileOpen(false); onOpenEmail(); }} />}
+                <NavItem mobile icon={<IoChatbubblesOutline className="h-4 w-4" />} label="Feedback & support" active={view === "feedback"} onClick={() => selectMobileView("feedback")} />
+              </div>
+            </nav>
+          </div>
+        </div>
+      )}
+
       {/* Left-edge pull zone: click to bring the rail back when collapsed. */}
       {collapsed && (
         <div
@@ -222,7 +322,7 @@ export default function Sidebar({
         </header>
 
         {/* Navigation */}
-        <nav className="relative min-w-[160px] flex-1 overflow-y-auto overflow-x-clip scrollbar-thin pb-10 pt-2">
+        <nav className="relative min-w-[160px] flex-1 overflow-y-auto overflow-x-clip scrollbar-thin pb-10 pt-2" aria-label="Primary navigation">
           <div className="relative flex flex-col gap-px px-2">
             <NavItem
               icon={<ProjectsIcon />}
@@ -395,14 +495,16 @@ interface NavItemProps {
   active: boolean;
   onClick: () => void;
   count?: number;
+  mobile?: boolean;
 }
 
-function NavItem({ icon, label, active, onClick, count }: NavItemProps) {
+function NavItem({ icon, label, active, onClick, count, mobile = false }: NavItemProps) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "group flex h-9 w-full origin-left flex-row items-center rounded-md transition-colors",
+        "group flex w-full origin-left flex-row items-center rounded-md transition-colors",
+        mobile ? "h-11" : "h-9",
         active
           ? "bg-[rgba(255,255,255,0.12)] text-white"
           : "text-[#888] hover:bg-[rgba(255,255,255,0.06)] hover:text-[#ededed]"

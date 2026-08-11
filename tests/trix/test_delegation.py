@@ -132,6 +132,17 @@ async def test_manager_delegates_and_reviews_worker(tmp_path: Path) -> None:
     assert completed["success"] is True
     assert store.get_session(session.id).status == SessionStatus.COMPLETED  # type: ignore[union-attr]
 
+    await codex.notification_handler(
+        {
+            "method": "turn/completed",
+            "params": {"threadId": manager.codex_thread_id},
+        }
+    )
+    finished_manager = store.get_agent(manager.id)
+    assert finished_manager is not None
+    assert finished_manager.status == AgentStatus.COMPLETED
+    assert finished_manager.current_activity == "Accepted"
+
 
 def test_leaf_does_not_receive_delegation_tool() -> None:
     from trix.models import Agent

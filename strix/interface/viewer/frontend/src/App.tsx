@@ -263,20 +263,20 @@ export default function App() {
       <div className="flex-1 min-w-0">
         {/* Top bar */}
         <div className="border-b border-[#222]">
-          <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-4 flex items-center gap-1.5">
+          <div className="max-w-[88rem] mx-auto py-4 pl-16 pr-3 sm:pl-16 sm:pr-6 lg:px-6 flex items-center gap-1.5">
             <a
               href={ctaUrl("https://app.strix.ai", "logo")}
               target="_blank"
               rel="noopener noreferrer"
               onClick={() => trackCta("logo", "topbar")}
-              className="flex items-center gap-1.5 opacity-90 transition-opacity hover:opacity-100 lg:hidden"
+              className="flex min-w-0 items-center gap-1.5 opacity-90 transition-opacity hover:opacity-100 lg:hidden"
               title="Open Strix Cloud"
             >
               <img src="./logo.png" alt="Strix" className="w-10 h-8 object-cover" />
-              <div className="text-base text-white font-medium tracking-tight">Strix</div>
+              <div className="hidden text-base font-medium tracking-tight text-white sm:block">Strix</div>
             </a>
             {run && <LiveIndicator finished={run.finished} />}
-            <div className="ml-auto flex items-center gap-3">
+            <div className="ml-auto flex min-w-0 items-center gap-2 sm:gap-3">
               {verified && runs && !runs.locked && runs.runs.length > 0 && (
                 <RunSwitcher
                   runs={runs}
@@ -292,14 +292,15 @@ export default function App() {
                 onClick={() => trackCta("run_in_cloud", "topbar")}
                 className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-black transition-opacity hover:opacity-90"
               >
-                Run in the cloud
+                <span className="hidden sm:inline">Run in the cloud</span>
+                <span className="sm:hidden">Cloud</span>
                 <ArrowUpRight className="w-3 h-3" aria-hidden="true" />
               </a>
             </div>
           </div>
         </div>
 
-        <div className="max-w-[88rem] mx-auto px-3 sm:px-6 py-8 sm:py-12 space-y-6">
+        <main className="max-w-[88rem] mx-auto min-w-0 overflow-x-hidden px-3 py-6 sm:px-6 sm:py-12 space-y-6">
           {error && !run && view !== "history" && view !== "email" && (
             <div className="rounded-lg px-4 py-3 flex gap-3 items-start border border-red-500/30 bg-red-500/5">
               <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5 text-red-400" aria-hidden="true" />
@@ -399,7 +400,7 @@ export default function App() {
             </>
           ) : null}
           </div>
-        </div>
+        </main>
       </div>
       <TrustToast message={TRUST_BANNER} />
     </div>
@@ -421,21 +422,21 @@ function RunSwitcher({
   const activeEntry = runs.runs.find((r) => r.name === activeRun);
   const current = activeEntry ? runTitle(activeEntry.target, activeEntry.name) : launchedName;
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <button
         onClick={() => setOpen((o) => !o)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         aria-label="Switch pentest"
-        className="flex items-center gap-2 rounded-lg border border-[#3a3a3a] bg-[rgba(255,255,255,0.05)] px-3 py-2 text-sm text-white transition-colors hover:border-[#555] hover:bg-[rgba(255,255,255,0.09)]"
+        className="flex items-center gap-1.5 rounded-lg border border-[#3a3a3a] bg-[rgba(255,255,255,0.05)] px-2 py-2 text-sm text-white transition-colors hover:border-[#555] hover:bg-[rgba(255,255,255,0.09)] sm:gap-2 sm:px-3"
       >
         <History className="h-4 w-4 flex-shrink-0 text-[#888]" aria-hidden="true" />
-        <span className="flex-shrink-0 text-[#888]">Pentest</span>
-        <span className="max-w-[260px] truncate font-medium">{current}</span>
+        <span className="hidden flex-shrink-0 text-[#888] md:inline">Pentest</span>
+        <span className="hidden max-w-[260px] truncate font-medium sm:inline">{current}</span>
         <ChevronDown className="h-4 w-4 flex-shrink-0 text-[#aaa]" aria-hidden="true" />
       </button>
       {open && (
         <div
-          className="absolute right-0 z-50 mt-2 max-h-96 w-96 overflow-y-auto rounded-xl py-1.5 shadow-2xl"
+          className="absolute right-0 z-50 mt-2 max-h-96 w-[min(24rem,calc(100vw-1.5rem))] overflow-y-auto rounded-xl py-1.5 shadow-2xl"
           style={{ border: "1px solid #3a3a3a", background: "#0a0a0a" }}
         >
           <div className="border-b border-[#222] px-3 py-2 text-[11px] font-semibold uppercase tracking-wide text-[#666]">
@@ -498,12 +499,12 @@ function SummaryHeader({ summary }: { summary: ParsedRunSummary }) {
   const duration = formatDuration(summary.durationSeconds);
   return (
     <div>
-      <h1 className="text-2xl font-semibold text-white">
+      <h1 className="break-words text-2xl font-semibold text-white">
         {runTitle(summary.targets[0] ?? null, summary.runName ?? summary.runId ?? "Pentest results")}
       </h1>
       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-[#888]">
         {summary.targets.length > 0 && (
-          <span className="font-mono text-[#aaa]">{summary.targets.join(", ")}</span>
+          <span className="min-w-0 break-all font-mono text-[#aaa]">{summary.targets.join(", ")}</span>
         )}
         {summary.scanMode && <Meta label={summary.scanMode} />}
         {duration && <Meta label={duration} />}
@@ -613,7 +614,7 @@ function EmailReportCta({ onOpenEmail }: { onOpenEmail: () => void }) {
       onClick={onOpenEmail}
       className="group w-full cursor-pointer rounded-xl border border-emerald-500/25 bg-emerald-500/[0.06] p-4 text-left transition-colors hover:border-emerald-500/40"
     >
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center">
         <div
           className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg"
           style={{ border: "1px solid rgba(16,185,129,0.3)", background: "rgba(16,185,129,0.08)" }}
@@ -626,7 +627,7 @@ function EmailReportCta({ onOpenEmail }: { onOpenEmail: () => void }) {
             Encrypted with a key only you can see, email verified with a one-time code before sending.
           </p>
         </div>
-        <span className="flex-shrink-0 rounded-lg bg-white px-3 py-1.5 text-xs font-semibold text-black transition-opacity group-hover:opacity-90">
+        <span className="flex-shrink-0 rounded-lg bg-white px-3 py-2 text-xs font-semibold text-black transition-opacity group-hover:opacity-90">
           Export report to PDF
         </span>
       </div>

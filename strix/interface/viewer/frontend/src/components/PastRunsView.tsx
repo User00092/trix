@@ -25,7 +25,7 @@ function SeverityChips({ counts }: { counts: RunSeverityCounts }) {
     return <span className="text-xs text-[#555]">No findings</span>;
   }
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
       {shown.map((s) => (
         <div key={s.key} className="flex items-center gap-1.5">
           <span className={`h-2 w-2 rounded-full ${s.dot}`} aria-hidden="true" />
@@ -143,7 +143,7 @@ export default function PastRunsView({
           <button
             key={run.name}
             onClick={() => onSelectRun(run.name)}
-            className={`animate-card-in group flex w-full cursor-pointer items-center gap-4 rounded-lg border px-4 py-3 text-left transition-colors ${
+            className={`animate-card-in group flex w-full cursor-pointer flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border px-4 py-3 text-left transition-colors ${
               active
                 ? "border-[#444] bg-[rgba(255,255,255,0.04)]"
                 : "border-[#222] bg-[rgba(255,255,255,0.02)] hover:border-[#444]"

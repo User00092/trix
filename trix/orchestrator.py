@@ -307,6 +307,16 @@ class Orchestrator:
             return
         agent = self._agent(self._thread_agents[thread_id])
         event = normalize_codex_event(agent.session_id, agent.id, payload)
+        if agent.status in {
+            AgentStatus.COMPLETED,
+            AgentStatus.FAILED,
+            AgentStatus.CANCELLED,
+        }:
+            # Tool calls can move an agent into a terminal state before Codex emits
+            # the notification that closes the surrounding turn.  Keep recording
+            # that late notification, but never let it reopen finished work.
+            await self.emit(event)
+            return
         agent.current_activity = event.message[:500]
         if event.event_type == "turn_completed":
             reports = self.store.reports_for_agent(agent.id)

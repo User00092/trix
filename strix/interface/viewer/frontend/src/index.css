@@ -19,6 +19,17 @@ body {
   font-family: var(--font-geist-sans);
 }
 
+html,
+body,
+#root {
+  min-width: 0;
+  max-width: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
 /* Thin sidebar scrollbar */
 .scrollbar-thin {
   scrollbar-width: thin;
