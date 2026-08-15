@@ -249,6 +249,14 @@ function timelineKind(eventType) {
   return "working";
 }
 
+function elapsedLabel(milliseconds) {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 function renderAgentModal() {
   const agent = state.agents.find((item) => item.id === state.modalAgent);
   const content = $("#agent-modal-content");
@@ -258,6 +266,25 @@ function renderAgentModal() {
   }
   const parent = state.agents.find((item) => item.id === agent.parent_id);
   const events = state.events.filter((event) => event.agent_id === agent.id);
+  const latestEvent = events.at(-1);
+  const quietFor = latestEvent ? Date.now() - new Date(latestEvent.created_at).getTime() : 0;
+  const active = ["starting", "planning", "working", "verifying", "reporting"].includes(agent.status);
+  const possiblyStalled = active && latestEvent && quietFor >= 120000;
+  const healthClass = agent.status === "failed" ? "failed" : possiblyStalled ? "stalled" : statusGroup(agent.status);
+  const healthTitle = agent.status === "failed"
+    ? "Failed"
+    : possiblyStalled
+      ? "Possibly stalled"
+      : active
+        ? "Still running"
+        : statusLabel(agent.status);
+  const healthDetail = agent.status === "failed"
+    ? (agent.error || "The agent reported a failure.")
+    : possiblyStalled
+      ? `No new activity for ${elapsedLabel(quietFor)}. No failure event has been received yet.`
+      : latestEvent
+        ? `Last activity ${elapsedLabel(quietFor)} ago: ${latestEvent.message}`
+        : "Waiting for the first activity event.";
   const reports = agent.reports || [];
   const reportMarkup = reports.length
     ? reports
@@ -303,6 +330,7 @@ function renderAgentModal() {
     `<div><h2>${esc(friendlyName(agent))}</h2><span>${esc(agent.id.slice(0, 8))}</span></div></div>` +
     `<button id="close-agent-modal" class="modal-close" type="button" aria-label="Close agent details">×</button></header>` +
     `<div class="agent-modal-scroll"><section class="modal-overview">` +
+    `<div class="agent-health ${healthClass}"><strong>${esc(healthTitle)}</strong><span>${esc(healthDetail)}</span></div>` +
     `<div><span>Assigned task</span><p>${esc(agent.task)}</p></div>` +
     `<dl><div><dt>Status</dt><dd>${esc(statusLabel(agent.status))}</dd></div>` +
     `<div><dt>Role</dt><dd>${esc(agent.role)}</dd></div>` +
@@ -614,4 +642,7 @@ window.addEventListener("popstate", () => {
   const sessionId = new URLSearchParams(location.search).get("session");
   if (sessionId) load(sessionId).catch(() => history.replaceState(null, "", "/"));
 });
+setInterval(() => {
+  if ($("#agent-dialog").open) scheduleRender();
+}, 30000);
 render();

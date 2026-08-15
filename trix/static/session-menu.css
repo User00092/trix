@@ -13,3 +13,11 @@ dialog.sessions-dialog { width:min(680px,calc(100% - 32px)); padding:0; }
 .session-list-copy strong { font-size:14px; }
 .session-list-copy small { color:var(--muted); text-transform:capitalize; }
 .session-list-copy>span { color:#aeb5c2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.agent-health { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:8px 12px; margin:0 0 18px; padding:12px 14px; border:1px solid #2d3e58; border-radius:8px; background:#101722; }
+.agent-health strong { color:var(--blue); font-size:12px; }
+.agent-health span { margin:0!important; color:#aeb8c7!important; font-size:12px!important; letter-spacing:0!important; text-transform:none!important; }
+.agent-health.stalled { background:#1b170d; border-color:#5e4a20; }
+.agent-health.stalled strong { color:var(--amber); }
+.agent-health.failed { background:#1c1013; border-color:#65313a; }
+.agent-health.failed strong { color:var(--red); }
+.agent-health.completed strong { color:var(--lime); }
