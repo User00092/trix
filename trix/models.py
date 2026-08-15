@@ -34,10 +34,15 @@ class AgentStatus(StrEnum):
     VERIFYING = "verifying"
     REPORTING = "reporting"
     AWAITING_VERIFICATION = "awaiting_verification"
+    IDLE = "idle"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
+
+TERMINAL_AGENT_STATUSES = frozenset(
+    {AgentStatus.COMPLETED, AgentStatus.FAILED, AgentStatus.CANCELLED}
+)
 
 ACTIVE_AGENT_STATUSES = frozenset(
     {
@@ -49,6 +54,18 @@ ACTIVE_AGENT_STATUSES = frozenset(
         AgentStatus.VERIFYING,
         AgentStatus.REPORTING,
         AgentStatus.AWAITING_VERIFICATION,
+        AgentStatus.IDLE,
+    }
+)
+
+#: States in which an agent is expected to be driving a Codex turn of its own.
+RUNNING_AGENT_STATUSES = frozenset(
+    {
+        AgentStatus.STARTING,
+        AgentStatus.PLANNING,
+        AgentStatus.WORKING,
+        AgentStatus.VERIFYING,
+        AgentStatus.REPORTING,
     }
 )
 

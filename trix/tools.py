@@ -90,6 +90,19 @@ def tools_for(agent: Agent) -> list[dict[str, Any]]:
                     ["agent_id", "message"],
                 ),
                 function(
+                    "dismiss_agent",
+                    (
+                        "Give up on a direct child that is failed, unresponsive, or no longer "
+                        "needed. It is cancelled with its descendants, freeing a delegation slot "
+                        "and unblocking completion. Its unfinished work stays your responsibility."
+                    ),
+                    {
+                        "agent_id": {"type": "string"},
+                        "reason": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    },
+                    ["agent_id", "reason"],
+                ),
+                function(
                     "review_report",
                     "Accept or reject a direct child's report after checking its actual work.",
                     {

@@ -79,7 +79,7 @@ function mergeAgent(agent) {
 function statusGroup(status) {
   if (["completed"].includes(status)) return "completed";
   if (["failed", "cancelled"].includes(status)) return "failed";
-  if (["waiting_for_children", "awaiting_verification", "queued"].includes(status)) {
+  if (["waiting_for_children", "awaiting_verification", "queued", "idle"].includes(status)) {
     return "waiting";
   }
   if (["verifying", "reporting"].includes(status)) return "verifying";
@@ -243,6 +243,9 @@ function listMarkup(items, emptyText) {
 
 function timelineKind(eventType) {
   if (eventType.includes("failed") || eventType.includes("rejected")) return "failed";
+  if (["timed_out", "dismissed", "cancelled", "unresponsive", "declined"].some((kind) => eventType.includes(kind))) {
+    return "failed";
+  }
   if (eventType.includes("completed") || eventType.includes("accepted")) return "completed";
   if (eventType.includes("verification") || eventType.includes("report")) return "verifying";
   if (eventType.includes("waiting")) return "waiting";
@@ -269,22 +272,27 @@ function renderAgentModal() {
   const latestEvent = events.at(-1);
   const quietFor = latestEvent ? Date.now() - new Date(latestEvent.created_at).getTime() : 0;
   const active = ["starting", "planning", "working", "verifying", "reporting"].includes(agent.status);
-  const possiblyStalled = active && latestEvent && quietFor >= 120000;
+  const unresponsive = agent.status === "idle" && Boolean(agent.error);
+  const possiblyStalled = unresponsive || (active && latestEvent && quietFor >= 120000);
   const healthClass = agent.status === "failed" ? "failed" : possiblyStalled ? "stalled" : statusGroup(agent.status);
   const healthTitle = agent.status === "failed"
     ? "Failed"
-    : possiblyStalled
-      ? "Possibly stalled"
-      : active
-        ? "Still running"
-        : statusLabel(agent.status);
+    : unresponsive
+      ? "Unresponsive"
+      : possiblyStalled
+        ? "Possibly stalled"
+        : active
+          ? "Still running"
+          : statusLabel(agent.status);
   const healthDetail = agent.status === "failed"
     ? (agent.error || "The agent reported a failure.")
-    : possiblyStalled
-      ? `No new activity for ${elapsedLabel(quietFor)}. No failure event has been received yet.`
-      : latestEvent
-        ? `Last activity ${elapsedLabel(quietFor)} ago: ${latestEvent.message}`
-        : "Waiting for the first activity event.";
+    : unresponsive
+      ? agent.error
+      : possiblyStalled
+        ? `No new activity for ${elapsedLabel(quietFor)}. No failure event has been received yet.`
+        : latestEvent
+          ? `Last activity ${elapsedLabel(quietFor)} ago: ${latestEvent.message}`
+          : "Waiting for the first activity event.";
   const reports = agent.reports || [];
   const reportMarkup = reports.length
     ? reports

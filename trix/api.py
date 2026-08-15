@@ -37,6 +37,7 @@ orchestrator = Orchestrator(store, codex)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     await orchestrator.reconcile_orphaned_sessions()
     yield
+    await orchestrator.aclose()
     await codex.close()
 
 

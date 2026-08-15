@@ -17,17 +17,38 @@ class FakeCodex:
     def __init__(self) -> None:
         self.notification_handler: Any = None
         self.request_handler: Any = None
+        self.request_handlers: dict[str, Any] = {}
+        self.transport_handlers: list[Any] = []
         self.threads: list[dict[str, Any]] = []
         self.turns: list[tuple[str, str]] = []
+        self.steers: list[tuple[str, str, str]] = []
+        self.active_turns: dict[str, str] = {}
+        self.steerable = True
+        self.failing_threads: set[int] = set()
+        self.interrupted: list[tuple[str, str]] = []
 
     def on_notification(self, handler: Any) -> None:
         self.notification_handler = handler
 
     def on_request(self, method: str, handler: Any) -> None:
-        assert method == "item/tool/call"
-        self.request_handler = handler
+        self.request_handlers[method] = handler
+        if method == "item/tool/call":
+            self.request_handler = handler
+
+    def on_transport_lost(self, handler: Any) -> None:
+        self.transport_handlers.append(handler)
+
+    @property
+    def is_running(self) -> bool:
+        return True
 
     async def start(self) -> None:
+        pass
+
+    async def ensure_running(self) -> None:
+        pass
+
+    async def recover_transport(self) -> None:
         pass
 
     async def create_thread(
@@ -38,6 +59,8 @@ class FakeCodex:
         *,
         read_only: bool = False,
     ) -> str:
+        if len(self.threads) in self.failing_threads:
+            raise CodexError("thread/start failed")
         thread_id = f"thread-{len(self.threads)}"
         self.threads.append(
             {
@@ -52,13 +75,24 @@ class FakeCodex:
 
     async def start_turn(self, thread_id: str, prompt: str) -> str:
         self.turns.append((thread_id, prompt))
-        return f"turn-{len(self.turns)}"
+        turn_id = f"turn-{len(self.turns)}"
+        self.active_turns[thread_id] = turn_id
+        return turn_id
+
+    async def steer_turn(self, thread_id: str, turn_id: str, prompt: str) -> str:
+        if not self.steerable or self.active_turns.get(thread_id) != turn_id:
+            raise CodexError("turn/steer rejected: turn is not active")
+        self.steers.append((thread_id, turn_id, prompt))
+        self.turns.append((thread_id, prompt))
+        return turn_id
 
     async def resume_thread(self, thread_id: str) -> str:
         return thread_id
 
     async def interrupt(self, thread_id: str, turn_id: str) -> None:
-        pass
+        self.interrupted.append((thread_id, turn_id))
+        if self.active_turns.get(thread_id) == turn_id:
+            self.active_turns.pop(thread_id)
 
 
 @pytest.mark.asyncio
@@ -80,16 +114,18 @@ async def test_idle_turn_replaces_thread_without_failing_agent(tmp_path: Path) -
     store = Store(tmp_path / "idle.db")
     orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
     orchestrator._turn_idle_timeout = 0.01
+    orchestrator._supervisor_interval = 0.01
     session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
     await orchestrator.start_session(session.id)
 
-    await asyncio.sleep(0.03)
+    await asyncio.sleep(0.06)
+    await orchestrator.aclose()
 
     agent = store.get_agent(session.root_agent_id or "")
     assert agent is not None
     assert agent.status == AgentStatus.WORKING
     assert agent.current_turn_id is not None
-    assert agent.codex_thread_id == "thread-1"
+    assert agent.codex_thread_id != "thread-0"
     assert store.get_session(session.id).status == SessionStatus.RUNNING  # type: ignore[union-attr]
     assert store.list_events(session.id)[-1].event_type == "agent_thread_recovered"
 
@@ -101,8 +137,10 @@ async def test_restart_resumes_orphaned_sessions(tmp_path: Path) -> None:
     session = await first.create_session("Build", "Implement feature", str(tmp_path))
     await first.start_session(session.id)
 
+    await first.aclose()
     restarted = Orchestrator(store, FakeCodex())  # type: ignore[arg-type]
     assert await restarted.reconcile_orphaned_sessions() == 1
+    await restarted.aclose()
 
     agent = store.get_agent(session.root_agent_id or "")
     assert agent is not None
@@ -198,6 +236,175 @@ async def test_manager_delegates_and_reviews_worker(tmp_path: Path) -> None:
     assert finished_manager is not None
     assert finished_manager.status == AgentStatus.COMPLETED
     assert finished_manager.current_activity == "Accepted"
+
+
+async def spawn_child(codex: FakeCodex, manager_thread: str, name: str) -> dict[str, Any]:
+    return await codex.request_handler(
+        tool_call(
+            manager_thread,
+            "spawn_agent",
+            {"name": name, "role": "Engineer", "task": f"Do {name}'s work"},
+        )
+    )
+
+
+def turn_completed(thread_id: str, turn_id: str) -> dict[str, Any]:
+    return {
+        "method": "turn/completed",
+        "params": {"threadId": thread_id, "turn": {"id": turn_id, "status": "completed"}},
+    }
+
+
+@pytest.mark.asyncio
+async def test_both_child_reports_reach_a_busy_manager(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    store = Store(tmp_path / "reports.db")
+    orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
+    session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
+    await orchestrator.start_session(session.id)
+    manager = store.get_agent(session.root_agent_id or "")
+    assert manager is not None
+    manager_thread = manager.codex_thread_id or ""
+
+    await spawn_child(codex, manager_thread, "Builder")
+    await spawn_child(codex, manager_thread, "Tester")
+    children = [item for item in store.list_agents(session.id) if item.parent_id == manager.id]
+    assert len(children) == 2
+
+    for child in children:
+        await codex.request_handler(
+            tool_call(
+                child.codex_thread_id or "",
+                "submit_report",
+                {"summary": f"{child.name} finished"},
+            )
+        )
+
+    reports = [store.reports_for_agent(child.id)[0] for child in children]
+    delivered = " ".join(prompt for _, prompt in codex.turns)
+    assert all(report.id in delivered for report in reports)
+    assert orchestrator._pending_messages[manager.id] == []
+    assert codex.interrupted == []
+    refreshed = store.get_agent(manager.id)
+    assert refreshed is not None
+    assert refreshed.current_turn_id is not None
+    await orchestrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stale_turn_completion_cannot_clear_the_live_turn(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    store = Store(tmp_path / "stale.db")
+    orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
+    session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
+    await orchestrator.start_session(session.id)
+    manager = store.get_agent(session.root_agent_id or "")
+    assert manager is not None
+
+    await codex.notification_handler(
+        turn_completed(manager.codex_thread_id or "", "turn-superseded")
+    )
+
+    refreshed = store.get_agent(manager.id)
+    assert refreshed is not None
+    assert refreshed.current_turn_id == manager.current_turn_id
+    assert refreshed.status == AgentStatus.WORKING
+    await orchestrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_idle_manager_is_restarted_instead_of_stalling(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    store = Store(tmp_path / "idle-manager.db")
+    orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
+    orchestrator._supervisor_interval = 0.01
+    orchestrator._idle_nudge_seconds = 0.01
+    session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
+    await orchestrator.start_session(session.id)
+    manager = store.get_agent(session.root_agent_id or "")
+    assert manager is not None
+
+    await codex.notification_handler(
+        turn_completed(manager.codex_thread_id or "", manager.current_turn_id or "")
+    )
+    idle = store.get_agent(manager.id)
+    assert idle is not None
+    assert idle.status == AgentStatus.IDLE
+
+    await asyncio.sleep(0.06)
+    await orchestrator.aclose()
+
+    nudged = store.get_agent(manager.id)
+    assert nudged is not None
+    assert nudged.status == AgentStatus.WORKING
+    assert nudged.current_turn_id is not None
+    assert any("trix.complete_session" in prompt for _, prompt in codex.turns)
+
+
+@pytest.mark.asyncio
+async def test_failed_worker_wakes_its_parent_and_unblocks_completion(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    codex.failing_threads = {1}
+    store = Store(tmp_path / "failure.db")
+    orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
+    session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
+    await orchestrator.start_session(session.id)
+    manager = store.get_agent(session.root_agent_id or "")
+    assert manager is not None
+
+    spawned = await spawn_child(codex, manager.codex_thread_id or "", "Builder")
+    assert spawned["success"] is False
+    child = next(item for item in store.list_agents(session.id) if item.parent_id == manager.id)
+    assert child.status == AgentStatus.FAILED
+
+    assert any("ended as failed" in prompt for _, prompt in codex.turns)
+    assert orchestrator._pending_messages[manager.id] == []
+
+    completed = await codex.request_handler(
+        tool_call(
+            manager.codex_thread_id or "",
+            "complete_session",
+            {"summary": "Delivered without the failed worker", "verification": ["Reviewed diff"]},
+        )
+    )
+    assert completed["success"] is True
+    assert store.get_session(session.id).status == SessionStatus.COMPLETED  # type: ignore[union-attr]
+    await orchestrator.aclose()
+
+
+@pytest.mark.asyncio
+async def test_dismissing_a_stuck_worker_frees_a_delegation_slot(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    store = Store(tmp_path / "dismiss.db")
+    orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
+    session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
+    await orchestrator.start_session(session.id)
+    manager = store.get_agent(session.root_agent_id or "")
+    assert manager is not None
+    manager_thread = manager.codex_thread_id or ""
+
+    await spawn_child(codex, manager_thread, "Builder")
+    await spawn_child(codex, manager_thread, "Tester")
+    stuck = next(item for item in store.list_agents(session.id) if item.name == "Builder")
+    grandchild = await orchestrator.spawn(stuck.id, "Helper", "Engineer", "Assist the builder")
+
+    blocked = await spawn_child(codex, manager_thread, "Third")
+    assert blocked["success"] is False
+
+    dismissed = await codex.request_handler(
+        tool_call(
+            manager_thread,
+            "dismiss_agent",
+            {"agent_id": stuck.id, "reason": "Unresponsive after repeated nudges"},
+        )
+    )
+    assert dismissed["success"] is True
+    assert store.get_agent(stuck.id).status == AgentStatus.CANCELLED  # type: ignore[union-attr]
+    assert store.get_agent(grandchild.id).status == AgentStatus.CANCELLED  # type: ignore[union-attr]
+
+    replacement = await spawn_child(codex, manager_thread, "Replacement")
+    assert replacement["success"] is True
+    await orchestrator.aclose()
 
 
 def test_leaf_does_not_receive_delegation_tool() -> None:
