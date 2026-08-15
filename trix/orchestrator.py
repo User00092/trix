@@ -38,7 +38,11 @@ class Orchestrator:
         self._thread_agents: dict[str, str] = {}
         self._pending_messages: dict[str, list[str]] = defaultdict(list)
         self._turn_watchdogs: dict[str, asyncio.Task[None]] = {}
+        self._command_watchdogs: dict[str, asyncio.Task[None]] = {}
+        self._recovery_attempts: dict[str, int] = defaultdict(int)
         self._turn_idle_timeout = float(os.environ.get("TRIX_TURN_IDLE_TIMEOUT", "900"))
+        self._command_timeout = float(os.environ.get("TRIX_COMMAND_TIMEOUT", "180"))
+        self._max_recovery_attempts = int(os.environ.get("TRIX_MAX_COMMAND_RECOVERIES", "2"))
         self._lock = asyncio.Lock()
         self.codex.on_notification(self._on_codex_event)
         self.codex.on_request("item/tool/call", self._on_tool_call)
@@ -76,34 +80,69 @@ class Orchestrator:
         return session
 
     async def reconcile_orphaned_sessions(self) -> int:
-        """Fail persisted active sessions that cannot survive an app restart."""
+        """Resume persisted agents after an application or transport restart."""
         reconciled = 0
+        running: list[TrixSession] = []
         for session in self.store.list_sessions():
-            if session.status != SessionStatus.RUNNING:
-                continue
-            message = "Trix restarted while this session was active; its Codex process was lost"
+            agents = self.store.list_agents(session.id)
+            timed_out = bool(agents) and all(
+                agent.status in {AgentStatus.COMPLETED, AgentStatus.CANCELLED}
+                or (
+                    agent.status == AgentStatus.FAILED
+                    and (agent.error or "").startswith("Codex turn produced no activity")
+                )
+                for agent in agents
+            )
+            if session.status == SessionStatus.RUNNING or (
+                session.status == SessionStatus.FAILED and timed_out
+            ):
+                session.status = SessionStatus.RUNNING
+                session.completed_at = None
+                self.store.save_session(session)
+                running.append(session)
+        if running:
+            await self.codex.start()
+        for session in running:
             for agent in self.store.list_agents(session.id):
-                if agent.status in {
-                    AgentStatus.COMPLETED,
-                    AgentStatus.FAILED,
-                    AgentStatus.CANCELLED,
-                }:
+                recoverable_timeout = (
+                    agent.status == AgentStatus.FAILED
+                    and (agent.error or "").startswith("Codex turn produced no activity")
+                )
+                if agent.status in {AgentStatus.COMPLETED, AgentStatus.CANCELLED} or (
+                    agent.status == AgentStatus.FAILED and not recoverable_timeout
+                ):
                     continue
-                agent.status = AgentStatus.FAILED
-                agent.error = message
-                agent.current_activity = "Stopped by application restart"
-                agent.current_turn_id = None
-                agent.completed_at = utc_now()
+                if not agent.codex_thread_id:
+                    await self._start_agent(agent)
+                    continue
+                try:
+                    thread_id = await self.codex.resume_thread(agent.codex_thread_id)
+                    self._thread_agents[thread_id] = agent.id
+                    agent.codex_thread_id = thread_id
+                    recovery = (
+                        "Trix reconnected to this persisted Codex thread after its application "
+                        "transport restarted. Continue the same assigned task from the "
+                        "repository's current state. Treat any command that lacked a completion "
+                        "event as failed, use a bounded-output fallback, and do not restart the "
+                        "task from scratch."
+                    )
+                    agent.current_turn_id = await self.codex.start_turn(thread_id, recovery)
+                    agent.status = AgentStatus.WORKING
+                    agent.error = None
+                    agent.completed_at = None
+                    agent.current_activity = "Resumed after application restart"
+                    self._watch_turn(agent, agent.current_turn_id)
+                except Exception as error:
+                    agent.status = AgentStatus.WORKING
+                    agent.error = str(error)
+                    agent.current_activity = "Waiting for persisted thread recovery"
                 self.store.save_agent(agent)
-            session.status = SessionStatus.FAILED
-            session.completed_at = utc_now()
-            self.store.save_session(session)
             await self.emit(
                 Event(
                     session_id=session.id,
                     agent_id=session.root_agent_id,
-                    event_type="session_failed",
-                    message=message,
+                    event_type="session_recovered",
+                    message="Reconnected persisted Codex agents after application restart",
                 )
             )
             reconciled += 1
@@ -350,6 +389,11 @@ class Orchestrator:
             return
         agent = self._agent(self._thread_agents[thread_id])
         event = normalize_codex_event(agent.session_id, agent.id, payload)
+        if event.event_type == "command_started" and agent.current_turn_id:
+            self._watch_command(agent, agent.current_turn_id, event.message)
+        elif event.event_type in {"command_completed", "command_failed"}:
+            self._cancel_command_watchdog(agent.id)
+            self._recovery_attempts[agent.id] = 0
         if agent.status in {
             AgentStatus.COMPLETED,
             AgentStatus.FAILED,
@@ -363,6 +407,7 @@ class Orchestrator:
         agent.current_activity = event.message[:500]
         if event.event_type == "turn_completed":
             self._cancel_turn_watchdog(agent.id)
+            self._cancel_command_watchdog(agent.id)
             agent.current_turn_id = None
             reports = self.store.reports_for_agent(agent.id)
             children = [
@@ -553,6 +598,138 @@ class Orchestrator:
         if task is not None and task is not asyncio.current_task():
             task.cancel()
 
+    def _watch_command(self, agent: Agent, turn_id: str, command: str) -> None:
+        self._cancel_command_watchdog(agent.id)
+        if self._command_timeout > 0:
+            self._command_watchdogs[agent.id] = asyncio.create_task(
+                self._recover_stalled_command(agent.id, turn_id, command)
+            )
+
+    def _cancel_command_watchdog(self, agent_id: str) -> None:
+        task = self._command_watchdogs.pop(agent_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _recover_stalled_command(
+        self, agent_id: str, turn_id: str, command: str
+    ) -> None:
+        try:
+            await asyncio.sleep(self._command_timeout)
+            agent = self._agent(agent_id)
+            if agent.current_turn_id != turn_id or agent.status not in {
+                AgentStatus.WORKING,
+                AgentStatus.PLANNING,
+                AgentStatus.VERIFYING,
+                AgentStatus.REPORTING,
+            }:
+                return
+            attempt = self._recovery_attempts[agent.id] + 1
+            self._recovery_attempts[agent.id] = attempt
+            message = (
+                f"Command produced no terminal event within {self._command_timeout:g} seconds: "
+                f"{command[:1000]}"
+            )
+            await self.emit(
+                Event(
+                    session_id=agent.session_id,
+                    agent_id=agent.id,
+                    event_type="command_timed_out",
+                    message=message,
+                )
+            )
+            if attempt > self._max_recovery_attempts:
+                await self._replace_agent_thread(agent, message)
+                return
+            if agent.codex_thread_id:
+                transport_failed = False
+                try:
+                    await asyncio.wait_for(
+                        self.codex.interrupt(agent.codex_thread_id, turn_id), timeout=5
+                    )
+                except Exception:
+                    transport_failed = True
+                if transport_failed:
+                    try:
+                        await self.codex.recover_transport()
+                        resumed_id = await self.codex.resume_thread(agent.codex_thread_id)
+                        self._thread_agents[resumed_id] = agent.id
+                        agent.codex_thread_id = resumed_id
+                    except Exception as error:
+                        agent.status = AgentStatus.WORKING
+                        agent.error = str(error)
+                        agent.current_activity = "Waiting to retry Codex transport recovery"
+                        self.store.save_agent(agent)
+                        self._watch_command(agent, turn_id, command)
+                        return
+                recovery = (
+                    "The previous shell command stalled without a completion event and was "
+                    "interrupted by Trix. Treat it as a failed command, preserve all completed "
+                    "work, and continue the same task using a bounded-output alternative. On "
+                    "Windows, check Get-Command before using optional executables such as rg and "
+                    "fall back to PowerShell-native commands when unavailable."
+                )
+                try:
+                    new_turn = await self.codex.start_turn(agent.codex_thread_id, recovery)
+                except Exception as error:
+                    agent.current_activity = f"Command recovery attempt {attempt} failed"
+                    agent.error = str(error)
+                    self.store.save_agent(agent)
+                    self._watch_command(agent, turn_id, command)
+                    return
+                agent.current_turn_id = new_turn
+                agent.current_activity = f"Recovering from stalled command (attempt {attempt})"
+                agent.error = None
+                self.store.save_agent(agent)
+                self._watch_turn(agent, new_turn)
+        finally:
+            self._command_watchdogs.pop(agent_id, None)
+
+    async def _replace_agent_thread(self, agent: Agent, reason: str) -> None:
+        """Replace broken Codex state without failing the logical Trix agent."""
+        old_thread = agent.codex_thread_id
+        session = self._session(agent.session_id)
+        try:
+            thread_id = await self.codex.create_thread(
+                Path(session.repository_path),
+                instructions_for(agent),
+                tools_for(agent),
+                read_only=agent.depth == 0,
+            )
+            recovery_prompt = (
+                f"Resume this agent's existing assignment: {agent.task}\n\n"
+                f"The previous Codex thread was replaced because: {reason}\n"
+                "A shell command failure is not an agent failure. Continue from the repository's "
+                "current state, use portable bounded-output commands, verify existing work, and "
+                "complete the original assignment."
+            )
+            turn_id = await self.codex.start_turn(thread_id, recovery_prompt)
+        except Exception as error:
+            agent.status = AgentStatus.WORKING
+            agent.error = str(error)
+            agent.current_activity = "Waiting to retry Codex thread recovery"
+            self.store.save_agent(agent)
+            self._watch_command(agent, agent.current_turn_id or "missing", reason)
+            return
+        if old_thread:
+            self._thread_agents.pop(old_thread, None)
+        self._thread_agents[thread_id] = agent.id
+        agent.codex_thread_id = thread_id
+        agent.current_turn_id = turn_id
+        agent.status = AgentStatus.WORKING
+        agent.error = None
+        agent.current_activity = "Resumed on a replacement Codex thread"
+        self._recovery_attempts[agent.id] = 0
+        self.store.save_agent(agent)
+        await self.emit(
+            Event(
+                session_id=agent.session_id,
+                agent_id=agent.id,
+                event_type="agent_thread_recovered",
+                message="Replaced an unresponsive Codex thread and resumed the same assignment",
+            )
+        )
+        self._watch_turn(agent, turn_id)
+
     async def _fail_idle_turn(self, agent_id: str, turn_id: str) -> None:
         try:
             await asyncio.sleep(self._turn_idle_timeout)
@@ -570,27 +747,8 @@ class Orchestrator:
                     await self.codex.interrupt(agent.codex_thread_id, turn_id)
                 except Exception:
                     pass
-            message = (
-                f"Codex turn produced no activity for {self._turn_idle_timeout:g} seconds"
-            )
-            agent.status = AgentStatus.FAILED
-            agent.error = message
-            agent.completed_at = utc_now()
-            agent.current_activity = "Codex turn timed out"
-            agent.current_turn_id = None
-            self.store.save_agent(agent)
-            session = self._session(agent.session_id)
-            session.status = SessionStatus.FAILED
-            session.completed_at = utc_now()
-            self.store.save_session(session)
-            await self.emit(
-                Event(
-                    session_id=agent.session_id,
-                    agent_id=agent.id,
-                    event_type="agent_failed",
-                    message=message,
-                )
-            )
+            message = f"Codex turn produced no activity for {self._turn_idle_timeout:g} seconds"
+            await self._replace_agent_thread(agent, message)
         finally:
             self._turn_watchdogs.pop(agent_id, None)
 

@@ -32,6 +32,8 @@ class CodexAppServer:
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._request_id = 0
         self._write_lock = asyncio.Lock()
+        self._recovery_lock = asyncio.Lock()
+        self._last_recovery = 0.0
         self._stderr_tail = ""
 
     def on_notification(self, handler: NotificationHandler) -> None:
@@ -84,6 +86,31 @@ class CodexAppServer:
             task.cancel()
         await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self._background_tasks.clear()
+        error = CodexError("Codex App Server connection closed")
+        for future in self._pending.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
+
+    async def recover_transport(self) -> None:
+        """Restart a wedged transport, coalescing concurrent recovery attempts."""
+        async with self._recovery_lock:
+            now = asyncio.get_running_loop().time()
+            if now - self._last_recovery < 10:
+                return
+            await self.close()
+            await self.start()
+            self._last_recovery = asyncio.get_running_loop().time()
+
+    async def resume_thread(self, thread_id: str) -> str:
+        result = await self.request(
+            "thread/resume", {"threadId": thread_id, "excludeTurns": True}
+        )
+        thread = result.get("thread", {})
+        resumed_id = thread.get("id") if isinstance(thread, dict) else None
+        if not isinstance(resumed_id, str):
+            raise CodexError("thread/resume did not return a thread id")
+        return resumed_id
 
     async def create_thread(
         self,
