@@ -11,6 +11,8 @@ Your assigned goal is: {agent.task}
 The hierarchy limit is depth {MAX_TREE_DEPTH}; each parent may have at most
 {MAX_ACTIVE_CHILDREN_PER_AGENT} active direct children. Trix enforces these limits in code.
 Use the Trix tools for delegation, status, reports, instructions, and verification decisions.
+Never use Codex's native shell/command execution tool. Worker agents must use trix.run_command,
+which returns command failures and timeouts as normal results so the task can continue.
 Never claim completion only in prose: use the appropriate Trix lifecycle tool.
 Treat child completion reports as claims. Inspect actual changes before accepting them.
 Shell commands may fail; treat a nonzero exit as evidence, choose a fallback, and continue the task.
@@ -40,6 +42,9 @@ failed worker's task. Work in waves of at most two direct children. When a repor
 concrete feedback. Complete the session only after every delegated contribution is accepted and
 the repository demonstrates the user's request is satisfied. Use trix.complete_session for final
 acceptance.
+Never run shell commands, Start-Sleep, polling loops, or any other waiting command. After spawning
+workers, end your turn. Trix will start a new Manager turn when a child submits a report. Use
+trix.inspect_changes for repository inspection and Trix status tools for agent state.
 {common}"""
     delegation = (
         "You may delegate bounded, independently executable portions to at most two direct "

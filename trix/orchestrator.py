@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from asyncio.subprocess import PIPE
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -103,6 +104,7 @@ class Orchestrator:
         if running:
             await self.codex.start()
         for session in running:
+            awaiting_reports: list[tuple[Agent, AgentReport]] = []
             for agent in self.store.list_agents(session.id):
                 recoverable_timeout = (
                     agent.status == AgentStatus.FAILED
@@ -111,6 +113,11 @@ class Orchestrator:
                 if agent.status in {AgentStatus.COMPLETED, AgentStatus.CANCELLED} or (
                     agent.status == AgentStatus.FAILED and not recoverable_timeout
                 ):
+                    continue
+                if agent.status == AgentStatus.AWAITING_VERIFICATION:
+                    reports = self.store.reports_for_agent(agent.id)
+                    if reports and reports[-1].status == ReportStatus.SUBMITTED:
+                        awaiting_reports.append((agent, reports[-1]))
                     continue
                 if not agent.codex_thread_id:
                     await self._start_agent(agent)
@@ -137,6 +144,8 @@ class Orchestrator:
                     agent.error = str(error)
                     agent.current_activity = "Waiting for persisted thread recovery"
                 self.store.save_agent(agent)
+            for child, report in awaiting_reports:
+                await self._deliver_to_parent(child, report)
             await self.emit(
                 Event(
                     session_id=session.id,
@@ -531,6 +540,12 @@ class Orchestrator:
             return f"Report {report.id} submitted to the parent for verification."
         if tool == "inspect_changes":
             return await self._inspect_changes(caller)
+        if tool == "run_command":
+            return await self._run_command(
+                caller,
+                self._string(arguments, "command"),
+                arguments.get("timeout_seconds", 120),
+            )
         if tool == "complete_session":
             verification = arguments.get("verification")
             if not isinstance(verification, list) or not all(
@@ -558,6 +573,62 @@ class Orchestrator:
             output.append(f"$ {' '.join(command)}\n{text}")
         return "\n".join(output)[:50_000]
 
+    async def _run_command(self, caller: Agent, command: str, timeout_seconds: Any) -> str:
+        if caller.depth == 0:
+            raise PolicyViolation("The Manager cannot run repository commands")
+        if not isinstance(timeout_seconds, int) or not 1 <= timeout_seconds <= 900:
+            raise TypeError("timeout_seconds must be an integer from 1 through 900")
+        session = self._session(caller.session_id)
+        executable = (
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command]
+            if sys.platform == "win32"
+            else ["/bin/sh", "-lc", command]
+        )
+        process = await asyncio.create_subprocess_exec(
+            *executable,
+            cwd=session.repository_path,
+            stdout=PIPE,
+            stderr=PIPE,
+        )
+        timed_out = False
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=timeout_seconds
+            )
+        except TimeoutError:
+            timed_out = True
+            process.kill()
+            stdout, stderr = await process.communicate()
+        limit = 50_000
+        stdout_text = stdout.decode(errors="replace")
+        stderr_text = stderr.decode(errors="replace")
+        result = {
+            "command": command,
+            "exit_code": process.returncode,
+            "timed_out": timed_out,
+            "stdout": stdout_text[-limit:],
+            "stderr": stderr_text[-limit:],
+            "stdout_truncated": len(stdout_text) > limit,
+            "stderr_truncated": len(stderr_text) > limit,
+        }
+        event_type = "command_timed_out" if timed_out else (
+            "command_completed" if process.returncode == 0 else "command_failed"
+        )
+        await self.emit(
+            Event(
+                session_id=caller.session_id,
+                agent_id=caller.id,
+                event_type=event_type,
+                message=(
+                    f"Supervised command timed out after {timeout_seconds} seconds"
+                    if timed_out
+                    else f"Supervised command exited with code {process.returncode}"
+                ),
+                raw_event=result,
+            )
+        )
+        return json.dumps(result)
+
     async def _deliver_to_parent(self, child: Agent, report: AgentReport) -> None:
         assert child.parent_id is not None
         parent = self._agent(child.parent_id)
@@ -575,13 +646,37 @@ class Orchestrator:
         if not messages or not agent.codex_thread_id:
             return
         message = messages[0]
+        if agent.current_turn_id:
+            old_turn = agent.current_turn_id
+            try:
+                await asyncio.wait_for(
+                    self.codex.interrupt(agent.codex_thread_id, old_turn), timeout=5
+                )
+            except Exception:
+                try:
+                    await self.codex.recover_transport()
+                    resumed_id = await self.codex.resume_thread(agent.codex_thread_id)
+                    self._thread_agents[resumed_id] = agent.id
+                    agent.codex_thread_id = resumed_id
+                except Exception as error:
+                    agent.error = str(error)
+                    agent.current_activity = "Waiting to recover Manager for child review"
+                    self.store.save_agent(agent)
+                    return
+            self._cancel_turn_watchdog(agent.id)
+            self._cancel_command_watchdog(agent.id)
+            agent.current_turn_id = None
         try:
             agent.current_turn_id = await self.codex.start_turn(agent.codex_thread_id, message)
-        except Exception:
+        except Exception as error:
+            agent.error = str(error)
+            agent.current_activity = "Waiting to start child-report review"
+            self.store.save_agent(agent)
             return
         messages.pop(0)
         agent.status = AgentStatus.VERIFYING
         agent.current_activity = "Reviewing child work"
+        agent.error = None
         self.store.save_agent(agent)
         self._watch_turn(agent, agent.current_turn_id)
 

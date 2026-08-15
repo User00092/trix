@@ -38,6 +38,27 @@ def tools_for(agent: Agent) -> list[dict[str, Any]]:
             [],
         ),
     ]
+    if agent.depth > 0:
+        tools.append(
+            function(
+                "run_command",
+                (
+                    "Run one repository command through Trix's supervised executor. Returns "
+                    "exit code, stdout, stderr, and timeout status; command failure does not fail "
+                    "the agent. Always use this instead of Codex's native shell tool."
+                ),
+                {
+                    "command": {"type": "string", "minLength": 1, "maxLength": 20000},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 900,
+                        "default": 120,
+                    },
+                },
+                ["command"],
+            )
+        )
     if agent.depth < MAX_TREE_DEPTH:
         tools.extend(
             [

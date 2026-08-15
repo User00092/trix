@@ -207,6 +207,15 @@ def test_leaf_does_not_receive_delegation_tool() -> None:
     names = {tool["name"] for tool in tools_for(leaf)[0]["tools"]}
     assert "spawn_agent" not in names
     assert "submit_report" in names
+    assert "run_command" in names
+
+
+def test_manager_cannot_use_supervised_command_tool() -> None:
+    from trix.models import Agent
+
+    manager = Agent(session_id="s", depth=0, name="Manager", role="Manager", task="Work")
+    names = {tool["name"] for tool in tools_for(manager)[0]["tools"]}
+    assert "run_command" not in names
 
 
 def test_provided_repository_becomes_session_authority(tmp_path: Path) -> None:
