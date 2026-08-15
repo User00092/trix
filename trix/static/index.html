@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Trix · Codex orchestration</title><link rel="stylesheet" href="/assets/app.css">
+  <link rel="stylesheet" href="/assets/session-menu.css?v=1">
 </head>
 <body>
   <header><a class="brand" href="/"><span class="mark">T</span><span>TRIX</span></a><div id="status" class="pill idle">● Idle</div></header>
   <main>
     <aside>
+      <button id="sessions-menu" class="secondary session-menu-button" type="button"><span>All sessions</span><span aria-hidden="true">&#8250;</span></button>
       <div class="section-title"><span>Agent hierarchy</span><span id="agent-count">0</span></div>
       <div id="tree" class="tree empty">Create a session to assemble your team.</div>
       <div class="stats" id="stats"></div>
@@ -56,5 +58,10 @@
     </form>
   </dialog>
   <dialog id="create-dialog"><form id="create-form" method="dialog"><div class="dialog-head"><div><p class="eyebrow">New orchestration</p><h2>Give the Manager a goal</h2></div><button value="cancel" class="icon">×</button></div><label>Session title<input name="title" required maxlength="160" placeholder="Ship account authentication"></label><label>Repository path<input name="repository_path" required placeholder="/absolute/path/to/repository"></label><label>Development task<textarea name="prompt" required rows="7" placeholder="Describe the outcome, constraints, and verification expectations…"></textarea></label><div class="actions"><button value="cancel" class="secondary">Cancel</button><button value="default">Create session</button></div></form></dialog>
-  <script src="/assets/app.js"></script>
+  <dialog id="sessions-dialog" class="sessions-dialog">
+    <div class="sessions-dialog-head"><div><p class="eyebrow">Workspace history</p><h2>All sessions</h2></div><button id="close-sessions" class="icon" type="button" aria-label="Close sessions">&times;</button></div>
+    <div id="sessions-list" class="sessions-list"><div class="empty">Loading sessions...</div></div>
+  </dialog>
+  <script src="/assets/app.js?v=3"></script>
+  <script src="/assets/session-menu.js?v=1"></script>
 </body></html>

@@ -1,0 +1,15 @@
+.session-menu-button { display:flex; position:static; align-items:center; justify-content:space-between; width:100%; margin:0 0 22px; padding:11px 13px; font-size:13px; }
+dialog.sessions-dialog { width:min(680px,calc(100% - 32px)); padding:0; }
+.sessions-dialog-head { display:flex; justify-content:space-between; align-items:flex-start; padding:24px 24px 14px; border-bottom:1px solid var(--line); }
+.sessions-dialog-head h2 { margin:0; }
+.sessions-list { padding:10px; max-height:min(640px,70vh); overflow:auto; }
+.session-list-item { display:grid; grid-template-columns:10px 1fr; gap:13px; width:100%; padding:14px; background:transparent; color:var(--text); border:1px solid transparent; text-align:left; }
+.session-list-item:hover,.session-list-item.selected { background:#191d25; border-color:var(--line); }
+.session-list-status { width:9px; height:9px; margin-top:6px; border-radius:50%; background:var(--muted); }
+.session-list-status.running { background:var(--lime); box-shadow:0 0 8px #b9f46b88; }
+.session-list-status.completed { background:var(--blue); }
+.session-list-status.failed,.session-list-status.cancelled { background:var(--red); }
+.session-list-copy { display:grid; gap:3px; min-width:0; }
+.session-list-copy strong { font-size:14px; }
+.session-list-copy small { color:var(--muted); text-transform:capitalize; }
+.session-list-copy>span { color:#aeb5c2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

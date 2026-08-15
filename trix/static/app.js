@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let state = {
   session: null,
+  sessions: [],
   agents: [],
   events: [],
   selected: null,
@@ -113,6 +114,38 @@ function render() {
   renderEvents();
   renderGraph();
   if ($("#agent-dialog").open) renderAgentModal();
+}
+
+function renderSessions() {
+  const node = $("#sessions-list");
+  if (!state.sessions.length) {
+    node.innerHTML = `<div class="empty">No sessions have been created yet.</div>`;
+    return;
+  }
+  node.innerHTML = state.sessions.map((session) => {
+    const selected = session.id === state.session?.id ? " selected" : "";
+    const created = new Date(session.created_at).toLocaleString([], {
+      dateStyle: "medium", timeStyle: "short",
+    });
+    return `<button class="session-list-item${selected}" data-session="${esc(session.id)}" type="button">` +
+      `<span class="session-list-status ${esc(session.status)}"></span>` +
+      `<span class="session-list-copy"><strong>${esc(session.title)}</strong>` +
+      `<small>${esc(created)} · ${esc(statusLabel(session.status))}</small>` +
+      `<span>${esc(session.user_prompt)}</span></span></button>`;
+  }).join("");
+  node.querySelectorAll("[data-session]").forEach((element) => {
+    element.onclick = async () => {
+      const id = element.dataset.session;
+      $("#sessions-dialog").close();
+      history.pushState({ session: id }, "", `/?session=${encodeURIComponent(id)}`);
+      await load(id);
+    };
+  });
+}
+
+async function refreshSessions() {
+  state.sessions = await api("/api/sessions");
+  renderSessions();
 }
 
 function renderTree() {
@@ -359,11 +392,7 @@ function renderGraph() {
   svg.dataset.graphCenterY = centerY;
   svg.innerHTML = `<g class="graph-world" transform="translate(${graphPanX} ${graphPanY}) translate(${centerX} ${centerY}) scale(${graphScale}) translate(${-centerX} ${-centerY})">${links}${nodes}</g>`;
   svg.querySelectorAll("[data-graph-agent]").forEach((element) => {
-    const choose = (event) => {
-      if (event && graphSuppressClick) {
-        event.preventDefault();
-        return;
-      }
+    const choose = () => {
       openAgentModal(element.dataset.graphAgent);
     };
     element.addEventListener("click", choose);
@@ -393,7 +422,8 @@ async function load(id) {
   state.session = data.session;
   state.agents = data.agents;
   state.events = data.events;
-  state.selected = state.selected || state.session.root_agent_id;
+  state.selected = state.session.root_agent_id;
+  state.modalAgent = null;
   if (state.socketSession !== id || !state.socket || state.socket.readyState > 1) connect(id);
   render();
 }
@@ -441,6 +471,18 @@ function connect(id) {
 }
 
 $("#new-session").onclick = () => $("#create-dialog").showModal();
+$("#sessions-menu").onclick = async () => {
+  $("#sessions-dialog").showModal();
+  try {
+    await refreshSessions();
+  } catch (error) {
+    $("#sessions-list").innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+  }
+};
+$("#close-sessions").onclick = () => $("#sessions-dialog").close();
+$("#sessions-dialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) event.currentTarget.close();
+});
 $("#create-form").onsubmit = async (event) => {
   event.preventDefault();
   if (event.submitter?.value === "cancel") {
@@ -457,6 +499,7 @@ $("#create-form").onsubmit = async (event) => {
     history.replaceState(null, "", `/?session=${session.id}`);
     await load(session.id);
     state.session = await api(`/api/sessions/${session.id}/start`, { method: "POST" });
+    await refreshSessions();
     scheduleRender();
   } catch (error) {
     alert(error.message);
@@ -510,6 +553,7 @@ $("#agent-dialog").addEventListener("close", () => {
 const graphSvg = $("#agent-graph");
 graphSvg.addEventListener("pointerdown", (event) => {
   if (event.button < 0 || event.button > 2) return;
+  if (event.target.closest("[data-graph-agent]")) return;
   const rect = graphSvg.getBoundingClientRect();
   const viewBox = graphSvg.viewBox.baseVal;
   graphDrag = {
@@ -566,4 +610,8 @@ $("#graph-fit").onclick = () => {
 const id = new URLSearchParams(location.search).get("session");
 if (id) load(id).catch(() => history.replaceState(null, "", "/"));
 else api("/api/sessions").then((items) => items[0] && load(items[0].id));
+window.addEventListener("popstate", () => {
+  const sessionId = new URLSearchParams(location.search).get("session");
+  if (sessionId) load(sessionId).catch(() => history.replaceState(null, "", "/"));
+});
 render();

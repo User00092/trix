@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from asyncio.subprocess import PIPE
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -36,6 +37,8 @@ class Orchestrator:
         self._subscribers: dict[str, set[Subscriber]] = defaultdict(set)
         self._thread_agents: dict[str, str] = {}
         self._pending_messages: dict[str, list[str]] = defaultdict(list)
+        self._turn_watchdogs: dict[str, asyncio.Task[None]] = {}
+        self._turn_idle_timeout = float(os.environ.get("TRIX_TURN_IDLE_TIMEOUT", "900"))
         self._lock = asyncio.Lock()
         self.codex.on_notification(self._on_codex_event)
         self.codex.on_request("item/tool/call", self._on_tool_call)
@@ -71,6 +74,40 @@ class Orchestrator:
             )
         )
         return session
+
+    async def reconcile_orphaned_sessions(self) -> int:
+        """Fail persisted active sessions that cannot survive an app restart."""
+        reconciled = 0
+        for session in self.store.list_sessions():
+            if session.status != SessionStatus.RUNNING:
+                continue
+            message = "Trix restarted while this session was active; its Codex process was lost"
+            for agent in self.store.list_agents(session.id):
+                if agent.status in {
+                    AgentStatus.COMPLETED,
+                    AgentStatus.FAILED,
+                    AgentStatus.CANCELLED,
+                }:
+                    continue
+                agent.status = AgentStatus.FAILED
+                agent.error = message
+                agent.current_activity = "Stopped by application restart"
+                agent.current_turn_id = None
+                agent.completed_at = utc_now()
+                self.store.save_agent(agent)
+            session.status = SessionStatus.FAILED
+            session.completed_at = utc_now()
+            self.store.save_session(session)
+            await self.emit(
+                Event(
+                    session_id=session.id,
+                    agent_id=session.root_agent_id,
+                    event_type="session_failed",
+                    message=message,
+                )
+            )
+            reconciled += 1
+        return reconciled
 
     async def start_session(self, session_id: str) -> TrixSession:
         session = self._session(session_id)
@@ -130,11 +167,16 @@ class Orchestrator:
             turn_id = await self.codex.start_turn(thread_id, agent.task)
             agent.current_turn_id = turn_id
             self.store.save_agent(agent)
+            self._watch_turn(agent, turn_id)
         except Exception as error:
             agent.status = AgentStatus.FAILED
             agent.error = str(error)
             agent.current_activity = "Codex failed to start"
             self.store.save_agent(agent)
+            if agent.parent_id is None:
+                session.status = SessionStatus.FAILED
+                session.completed_at = utc_now()
+                self.store.save_session(session)
             await self.emit(
                 Event(
                     session_id=agent.session_id,
@@ -153,6 +195,7 @@ class Orchestrator:
         agent.status = AgentStatus.WORKING
         agent.current_activity = "Following up on an instruction"
         self.store.save_agent(agent)
+        self._watch_turn(agent, agent.current_turn_id)
         await self.emit(
             Event(
                 session_id=agent.session_id,
@@ -319,6 +362,8 @@ class Orchestrator:
             return
         agent.current_activity = event.message[:500]
         if event.event_type == "turn_completed":
+            self._cancel_turn_watchdog(agent.id)
+            agent.current_turn_id = None
             reports = self.store.reports_for_agent(agent.id)
             children = [
                 item
@@ -347,6 +392,8 @@ class Orchestrator:
             agent.status = AgentStatus.FAILED
         self.store.save_agent(agent)
         await self.emit(event)
+        if agent.current_turn_id:
+            self._watch_turn(agent, agent.current_turn_id)
         if event.event_type == "turn_completed":
             await self._flush_pending(agent)
 
@@ -491,6 +538,61 @@ class Orchestrator:
         agent.status = AgentStatus.VERIFYING
         agent.current_activity = "Reviewing child work"
         self.store.save_agent(agent)
+        self._watch_turn(agent, agent.current_turn_id)
+
+    def _watch_turn(self, agent: Agent, turn_id: str) -> None:
+        """Start or refresh the inactivity watchdog for an active Codex turn."""
+        self._cancel_turn_watchdog(agent.id)
+        if self._turn_idle_timeout > 0:
+            self._turn_watchdogs[agent.id] = asyncio.create_task(
+                self._fail_idle_turn(agent.id, turn_id)
+            )
+
+    def _cancel_turn_watchdog(self, agent_id: str) -> None:
+        task = self._turn_watchdogs.pop(agent_id, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _fail_idle_turn(self, agent_id: str, turn_id: str) -> None:
+        try:
+            await asyncio.sleep(self._turn_idle_timeout)
+            agent = self._agent(agent_id)
+            if agent.current_turn_id != turn_id or agent.status not in {
+                AgentStatus.STARTING,
+                AgentStatus.WORKING,
+                AgentStatus.PLANNING,
+                AgentStatus.VERIFYING,
+                AgentStatus.REPORTING,
+            }:
+                return
+            if agent.codex_thread_id:
+                try:
+                    await self.codex.interrupt(agent.codex_thread_id, turn_id)
+                except Exception:
+                    pass
+            message = (
+                f"Codex turn produced no activity for {self._turn_idle_timeout:g} seconds"
+            )
+            agent.status = AgentStatus.FAILED
+            agent.error = message
+            agent.completed_at = utc_now()
+            agent.current_activity = "Codex turn timed out"
+            agent.current_turn_id = None
+            self.store.save_agent(agent)
+            session = self._session(agent.session_id)
+            session.status = SessionStatus.FAILED
+            session.completed_at = utc_now()
+            self.store.save_session(session)
+            await self.emit(
+                Event(
+                    session_id=agent.session_id,
+                    agent_id=agent.id,
+                    event_type="agent_failed",
+                    message=message,
+                )
+            )
+        finally:
+            self._turn_watchdogs.pop(agent_id, None)
 
     def _agent_in_session(self, caller: Agent, agent_id: str) -> Agent:
         target = self._agent(agent_id)

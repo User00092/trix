@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from trix.codex import CodexAppServer
+from trix.codex import CodexAppServer, CodexError
 from trix.models import AgentStatus, SessionStatus
 from trix.orchestrator import Orchestrator
 from trix.store import Store
@@ -55,6 +56,55 @@ class FakeCodex:
 
     async def interrupt(self, thread_id: str, turn_id: str) -> None:
         pass
+
+
+@pytest.mark.asyncio
+async def test_codex_request_times_out_and_cleans_pending_request() -> None:
+    client = CodexAppServer(request_timeout=0.01)
+
+    async def send(_payload: dict[str, Any]) -> None:
+        pass
+
+    client._send = send  # type: ignore[method-assign]
+    with pytest.raises(CodexError, match="did not respond"):
+        await client.request("thread/start", {})
+    assert client._pending == {}
+
+
+@pytest.mark.asyncio
+async def test_idle_turn_fails_agent_and_session(tmp_path: Path) -> None:
+    codex = FakeCodex()
+    store = Store(tmp_path / "idle.db")
+    orchestrator = Orchestrator(store, codex)  # type: ignore[arg-type]
+    orchestrator._turn_idle_timeout = 0.01
+    session = await orchestrator.create_session("Build", "Implement feature", str(tmp_path))
+    await orchestrator.start_session(session.id)
+
+    await asyncio.sleep(0.03)
+
+    agent = store.get_agent(session.root_agent_id or "")
+    assert agent is not None
+    assert agent.status == AgentStatus.FAILED
+    assert agent.current_turn_id is None
+    assert store.get_session(session.id).status == SessionStatus.FAILED  # type: ignore[union-attr]
+    assert store.list_events(session.id)[-1].event_type == "agent_failed"
+
+
+@pytest.mark.asyncio
+async def test_restart_reconciles_orphaned_sessions(tmp_path: Path) -> None:
+    store = Store(tmp_path / "restart.db")
+    first = Orchestrator(store, FakeCodex())  # type: ignore[arg-type]
+    session = await first.create_session("Build", "Implement feature", str(tmp_path))
+    await first.start_session(session.id)
+
+    restarted = Orchestrator(store, FakeCodex())  # type: ignore[arg-type]
+    assert await restarted.reconcile_orphaned_sessions() == 1
+
+    agent = store.get_agent(session.root_agent_id or "")
+    assert agent is not None
+    assert agent.status == AgentStatus.FAILED
+    assert store.get_session(session.id).status == SessionStatus.FAILED  # type: ignore[union-attr]
+    assert store.list_events(session.id)[-1].event_type == "session_failed"
 
 
 def tool_call(thread_id: str, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:

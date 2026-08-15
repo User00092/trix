@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Awaitable, Callable, Coroutine
 from pathlib import Path
 from typing import Any
@@ -17,8 +18,11 @@ class CodexError(RuntimeError):
 class CodexAppServer:
     """Async JSON-RPC client for `codex app-server --stdio`."""
 
-    def __init__(self, executable: str = "codex") -> None:
+    def __init__(self, executable: str = "codex", request_timeout: float | None = None) -> None:
         self.executable = executable
+        self.request_timeout = request_timeout or float(
+            os.environ.get("TRIX_CODEX_REQUEST_TIMEOUT", "60")
+        )
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
         self._stderr_task: asyncio.Task[None] | None = None
@@ -125,8 +129,19 @@ class CodexAppServer:
         request_id = self._request_id
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending[request_id] = future
-        await self._send({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
-        return await future
+        try:
+            await self._send(
+                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+            )
+            async with asyncio.timeout(self.request_timeout):
+                return await future
+        except TimeoutError as error:
+            raise CodexError(
+                f"Codex App Server did not respond to {method!r} within "
+                f"{self.request_timeout:g} seconds"
+            ) from error
+        finally:
+            self._pending.pop(request_id, None)
 
     async def notify(self, method: str, params: dict[str, Any]) -> None:
         await self._send({"jsonrpc": "2.0", "method": method, "params": params})

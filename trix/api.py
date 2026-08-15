@@ -35,11 +35,20 @@ orchestrator = Orchestrator(store, codex)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await orchestrator.reconcile_orphaned_sessions()
     yield
     await codex.close()
 
 
 app = FastAPI(title="Trix", version="0.1.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def prevent_stale_frontend(request: Any, call_next: Any) -> Any:
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 def not_found(error: KeyError) -> HTTPException:
