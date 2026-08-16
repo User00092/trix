@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -10,6 +11,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from trix.change_stats import repository_change_stats
 from trix.codex import CodexAppServer
 from trix.models import (
     Agent,
@@ -94,6 +96,11 @@ async def session_detail(session_id: str) -> dict[str, Any]:
         "session": session.model_dump(mode="json"),
         "agents": [agent_payload(agent) for agent in agents],
         "events": [event.model_dump(mode="json") for event in store.list_events(session_id)],
+        "change_stats": await asyncio.to_thread(
+            repository_change_stats,
+            session.repository_path,
+            session.started_at.isoformat() if session.started_at else None,
+        ),
     }
 
 
@@ -173,6 +180,13 @@ async def events_socket(websocket: WebSocket, session_id: str) -> None:
                 "event": event.model_dump(mode="json"),
                 "session": session.model_dump(mode="json") if session else None,
                 "agent": agent_payload(agent) if agent else None,
+                "change_stats": await asyncio.to_thread(
+                    repository_change_stats,
+                    session.repository_path,
+                    session.started_at.isoformat() if session.started_at else None,
+                )
+                if session
+                else None,
             }
         )
 
@@ -188,6 +202,13 @@ async def events_socket(websocket: WebSocket, session_id: str) -> None:
                 "events": [
                     event.model_dump(mode="json") for event in store.list_events(session_id)
                 ],
+                "change_stats": await asyncio.to_thread(
+                    repository_change_stats,
+                    session.repository_path,
+                    session.started_at.isoformat() if session.started_at else None,
+                )
+                if session
+                else None,
             }
         )
         while True:

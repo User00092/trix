@@ -4,12 +4,16 @@ let state = {
   sessions: [],
   agents: [],
   events: [],
+  changeStats: null,
   selected: null,
   modalAgent: null,
   socket: null,
   socketSession: null,
   heartbeat: null,
   reconnect: null,
+  eventsFollow: true,
+  modalFollow: true,
+  stopPending: false,
 };
 let graphScale = 1;
 let graphPanX = 0;
@@ -92,10 +96,11 @@ function selectAgent(agentId) {
 }
 
 function openAgentModal(agentId) {
+  if (state.modalAgent !== agentId) state.modalFollow = true;
   state.modalAgent = agentId;
-  renderAgentModal();
   const dialog = $("#agent-dialog");
   if (!dialog.open) dialog.showModal();
+  renderAgentModal();
 }
 
 function render() {
@@ -107,6 +112,10 @@ function render() {
   const status = $("#status");
   status.className = `pill ${session?.status || "idle"}`;
   status.textContent = `● ${session ? statusLabel(session.status) : "Idle"}`;
+  const stopButton = $("#stop-session");
+  stopButton.classList.toggle("hidden", session?.status !== "running" && !state.stopPending);
+  stopButton.disabled = state.stopPending;
+  stopButton.textContent = state.stopPending ? "Stopping…" : "Stop session";
   $("#agent-count").textContent = state.agents.length;
   renderTree();
   renderStats();
@@ -184,11 +193,63 @@ function renderStats() {
   const active = state.agents.filter((agent) => statusGroup(agent.status) === "working").length;
   const failed = state.agents.filter((agent) => statusGroup(agent.status) === "failed").length;
   const depth = Math.max(...state.agents.map((agent) => agent.depth), 0);
+  const usage = tokenUsage();
+  const reportedFiles = new Set(
+    state.agents.flatMap((agent) => (agent.reports || []).flatMap((report) => report.files_changed || [])),
+  ).size;
+  const changes = state.changeStats || {};
+  const filesChanged = changes.available ? Math.max(changes.files, reportedFiles) : reportedFiles;
   $("#stats").innerHTML =
-    `<div class="stat"><b>${active}</b><span>Active</span></div>` +
-    `<div class="stat"><b>${completed}</b><span>Accepted</span></div>` +
-    `<div class="stat"><b>${failed}</b><span>Failed</span></div>` +
-    `<div class="stat"><b>${depth}</b><span>Max depth</span></div>`;
+    `<div class="stat paired-stat"><div><b>${active}</b><span>Active</span></div>` +
+    `<i></i><div><b>${completed}</b><span>Accepted</span></div></div>` +
+    `<div class="stat paired-stat"><div><b>${failed}</b><span>Failed</span></div>` +
+    `<i></i><div><b>${depth}</b><span>Max depth</span></div></div>` +
+    `<div class="stat change-stat"><b>${filesChanged}</b><span>Files changed</span>` +
+    `<div><strong>+${changes.additions || 0}</strong><em>−${changes.deletions || 0}</em></div></div>` +
+    `<div class="stat token-stat"><b><span>${formatTokens(usage.input)}</span><i>/</i><span>${formatTokens(usage.output)}</span></b>` +
+    `<span><span>Input</span><span>Output</span></span></div>`;
+}
+
+function numericToken(record, names) {
+  if (!record || typeof record !== "object") return null;
+  for (const name of names) {
+    const value = Number(record[name]);
+    if (Number.isFinite(value) && value >= 0) return value;
+  }
+  return null;
+}
+
+function usageFromPayload(payload) {
+  const params = payload?.params || payload;
+  const usage = params?.tokenUsage?.total || params?.token_usage?.total ||
+    params?.tokenUsage || params?.token_usage || params?.usage ||
+    params?.turn?.usage || payload?.usage;
+  if (!usage || typeof usage !== "object") return null;
+  const input = numericToken(usage, ["inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]);
+  const output = numericToken(usage, ["outputTokens", "output_tokens", "completionTokens", "completion_tokens"]);
+  return input === null && output === null ? null : { input: input || 0, output: output || 0 };
+}
+
+function tokenUsage() {
+  const latestByThread = new Map();
+  state.events.forEach((event) => {
+    const usage = usageFromPayload(event.raw_event);
+    if (!usage) return;
+    const params = event.raw_event?.params || {};
+    const key = params.threadId || params.thread_id || event.agent_id || `event-${event.id}`;
+    latestByThread.set(key, usage);
+  });
+  return [...latestByThread.values()].reduce(
+    (total, usage) => ({ input: total.input + usage.input, output: total.output + usage.output }),
+    { input: 0, output: 0 },
+  );
+}
+
+function formatTokens(value) {
+  return new Intl.NumberFormat(undefined, {
+    notation: value >= 10_000 ? "compact" : "standard",
+    maximumFractionDigits: value >= 10_000 ? 1 : 0,
+  }).format(value);
 }
 
 function renderDetail() {
@@ -215,9 +276,12 @@ function renderDetail() {
 
 function renderEvents() {
   const node = $("#events");
+  const oldTop = node.scrollTop;
+  const oldHeight = node.scrollHeight;
   if (!state.events.length) {
     node.className = "event-list empty";
     node.textContent = "Activity will stream here in real time.";
+    $("#events-current").classList.add("hidden");
     return;
   }
   node.className = "event-list";
@@ -234,6 +298,9 @@ function renderEvents() {
       return `<div class="event"><time>${time}</time><span class="who">${esc(friendlyName(agent))}</span><span>${esc(event.message)}</span></div>`;
     })
     .join("");
+  if (state.eventsFollow) node.scrollTop = 0;
+  else node.scrollTop = oldTop + Math.max(0, node.scrollHeight - oldHeight);
+  $("#events-current").classList.toggle("hidden", state.eventsFollow);
 }
 
 function listMarkup(items, emptyText) {
@@ -260,9 +327,19 @@ function elapsedLabel(milliseconds) {
   return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
 }
 
+function modalCurrentTop(scroll) {
+  const transcript = scroll.querySelector(".transcript");
+  if (!transcript) return 0;
+  const scrollRect = scroll.getBoundingClientRect();
+  const transcriptRect = transcript.getBoundingClientRect();
+  return Math.max(0, scroll.scrollTop + transcriptRect.bottom - scrollRect.bottom + 18);
+}
+
 function renderAgentModal() {
   const agent = state.agents.find((item) => item.id === state.modalAgent);
   const content = $("#agent-modal-content");
+  const previousScroll = content.querySelector(".agent-modal-scroll");
+  const oldTop = previousScroll?.scrollTop || 0;
   if (!agent) {
     content.innerHTML = "";
     return;
@@ -346,11 +423,25 @@ function renderAgentModal() {
     `<div><dt>Depth</dt><dd>${agent.depth}</dd></div></dl>` +
     `<div class="current-output"><span>Current activity</span><p>${esc(agent.current_activity)}</p></div>` +
     `${agent.error ? `<div class="report-callout error"><strong>Error</strong><p>${esc(agent.error)}</p></div>` : ""}` +
-    `</section><section class="modal-section"><div class="modal-section-heading"><span>Activity and outputs</span><span>${events.length} events</span></div>` +
+    `</section><section class="modal-section"><div class="modal-section-heading"><span>Activity and outputs</span><span class="modal-heading-actions"><span>${events.length} events</span>` +
+    `<button id="modal-current" class="view-current${state.modalFollow ? " hidden" : ""}" type="button">View current</button></span></div>` +
     `<div class="transcript">${timeline}</div></section>${reportMarkup}</div>`;
 
   $("#close-agent-modal").onclick = () => $("#agent-dialog").close();
   $("#modal-instruction").classList.toggle("hidden", !agent.codex_thread_id);
+  const scroll = content.querySelector(".agent-modal-scroll");
+  scroll.scrollTop = state.modalFollow ? modalCurrentTop(scroll) : oldTop;
+  scroll.addEventListener("scroll", () => {
+    const atCurrent = Math.abs(scroll.scrollTop - modalCurrentTop(scroll)) <= 24;
+    if (atCurrent === state.modalFollow) return;
+    state.modalFollow = atCurrent;
+    $("#modal-current")?.classList.toggle("hidden", atCurrent);
+  }, { passive: true });
+  $("#modal-current").onclick = () => {
+    state.modalFollow = true;
+    scroll.scrollTop = modalCurrentTop(scroll);
+    $("#modal-current").classList.add("hidden");
+  };
 }
 
 function renderGraph() {
@@ -367,8 +458,9 @@ function renderGraph() {
   svg.classList.remove("hidden");
 
   const width = 1120;
-  const nodeWidth = 228;
-  const nodeHeight = 66;
+  const nodeWidth = 244;
+  const nodeHeight = 84;
+  const nodeGap = 18;
   const top = 72;
   const levelGap = 154;
   const maxDepth = Math.max(...state.agents.map((agent) => agent.depth), 0);
@@ -379,9 +471,11 @@ function renderGraph() {
   });
   const positions = new Map();
   levels.forEach((agents, depth) => {
+    const rowWidth = agents.length * nodeWidth + Math.max(0, agents.length - 1) * nodeGap;
+    const rowStart = (width - rowWidth) / 2 + nodeWidth / 2;
     agents.forEach((agent, index) => {
       positions.set(agent.id, {
-        x: ((index + 1) * width) / (agents.length + 1),
+        x: rowStart + index * (nodeWidth + nodeGap),
         y: top + depth * levelGap,
       });
     });
@@ -409,14 +503,17 @@ function renderGraph() {
       const group = statusGroup(agent.status);
       const displayName = friendlyName(agent);
       const name = esc(displayName.length > 28 ? `${displayName.slice(0, 27)}…` : displayName);
+      const roleText = String(agent.role || "Agent");
+      const role = esc(roleText.length > 32 ? `${roleText.slice(0, 31)}…` : roleText);
       return `<g class="graph-node ${group}${selectedNode}" data-graph-agent="${agent.id}" ` +
         `transform="translate(${position.x - nodeWidth / 2} ${position.y - nodeHeight / 2})" ` +
         `role="treeitem" tabindex="0" aria-label="${esc(displayName)}, ${statusLabel(agent.status)}">` +
-        `<rect width="${nodeWidth}" height="${nodeHeight}" rx="11"/>` +
+        `<rect class="graph-node-surface" width="${nodeWidth}" height="${nodeHeight}" rx="13"/>` +
         `<circle class="graph-status-ring" cx="20" cy="24" r="7"/>` +
         `<circle class="graph-status" cx="20" cy="24" r="4"/>` +
         `<text class="graph-node-name" x="34" y="28">${name}</text>` +
-        `<text class="graph-node-meta" x="20" y="49">${esc(statusLabel(agent.status))} · depth ${agent.depth}</text>` +
+        `<text class="graph-node-role" x="20" y="51">${role}</text>` +
+        `<text class="graph-node-meta" x="20" y="69">${esc(statusLabel(agent.status))} · Depth ${agent.depth}</text>` +
         `</g>`;
     })
     .join("");
@@ -454,10 +551,12 @@ function updateGraphTransform() {
 }
 
 async function load(id) {
+  if (state.session?.id !== id) state.eventsFollow = true;
   const data = await api(`/api/sessions/${id}`);
   state.session = data.session;
   state.agents = data.agents;
   state.events = data.events;
+  state.changeStats = data.change_stats || null;
   state.selected = state.session.root_agent_id;
   state.modalAgent = null;
   if (state.socketSession !== id || !state.socket || state.socket.readyState > 1) connect(id);
@@ -479,9 +578,11 @@ function connect(id) {
       state.session = message.session;
       state.agents = message.agents || [];
       state.events = message.events || [];
+      state.changeStats = message.change_stats || null;
     } else if (message.type === "event") {
       if (message.session) state.session = message.session;
       mergeAgent(message.agent);
+      if (message.change_stats) state.changeStats = message.change_stats;
       if (message.event && !state.events.some((item) => item.id === message.event.id)) {
         state.events.push(message.event);
         if (state.events.length > 1000) state.events.splice(0, state.events.length - 1000);
@@ -506,7 +607,39 @@ function connect(id) {
   };
 }
 
+const eventsNode = $("#events");
+eventsNode.addEventListener("scroll", () => {
+  const atCurrent = eventsNode.scrollTop <= 24;
+  if (atCurrent === state.eventsFollow) return;
+  state.eventsFollow = atCurrent;
+  $("#events-current").classList.toggle("hidden", atCurrent);
+}, { passive: true });
+$("#events-current").onclick = () => {
+  state.eventsFollow = true;
+  eventsNode.scrollTop = 0;
+  $("#events-current").classList.add("hidden");
+};
+
 $("#new-session").onclick = () => $("#create-dialog").showModal();
+$("#stop-session").onclick = async () => {
+  const session = state.session;
+  if (!session || session.status !== "running" || state.stopPending) return;
+  if (!confirm("Stop this session? The Manager and every running subagent will be interrupted.")) {
+    return;
+  }
+  state.stopPending = true;
+  render();
+  try {
+    await api(`/api/sessions/${session.id}/cancel`, { method: "POST" });
+    await load(session.id);
+    await refreshSessions();
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    state.stopPending = false;
+    render();
+  }
+};
 $("#sessions-menu").onclick = async () => {
   $("#sessions-dialog").showModal();
   try {
